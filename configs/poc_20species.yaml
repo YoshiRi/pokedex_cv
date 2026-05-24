@@ -36,7 +36,7 @@ pokemon_ids:
   - 1025 # Pecharunt  (Gen9, newest legendary)
 
 collection:
-  output_dir: raw_images
+  output_dir: data/sprites
   sprite_types:
     - front_default
     - back_default
