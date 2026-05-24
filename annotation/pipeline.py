@@ -51,7 +51,7 @@ def resolve_args_from_config(args: argparse.Namespace) -> argparse.Namespace:
 
     if args.raw_dir is None:
         raw_base = Path(col.get("output_dir", "raw_images"))
-        args.raw_dir = str(raw_base / "pokeapi_sprites")
+        args.raw_dir = str(raw_base / "pokeapi")
     if args.output is None:
         args.output = ann.get("output_dir", "datasets/raw_annotated")
     if not args.composite:
