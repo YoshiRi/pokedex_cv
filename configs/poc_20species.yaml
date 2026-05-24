@@ -1,0 +1,47 @@
+name: poc_20species
+
+# 20 Pokemon for proof-of-concept
+pokemon_ids: [1, 4, 7, 25, 39, 52, 94, 133, 143, 150, 196, 197, 448, 471, 700, 725, 728, 800, 906, 1025]
+
+# class_map: ordered list of national Pokedex IDs
+# Index in this list = YOLO class_id written to label files
+# Must match pokemon_ids above
+class_map: [1, 4, 7, 25, 39, 52, 94, 133, 143, 150, 196, 197, 448, 471, 700, 725, 728, 800, 906, 1025]
+
+collection:
+  output_dir: data/sprites
+  sprite_types:
+    - front_default
+    - back_default
+    - front_shiny
+    - back_shiny
+    - official_artwork
+    - home
+
+annotation:
+  output_dir: datasets/poc_20species/raw_annotated
+  composites_dir: datasets/poc_20species/raw_annotated/composites
+  num_composites: 15
+  output_size: 640
+  min_scale: 0.05
+  max_scale: 0.50
+  min_pokemon: 1
+  max_pokemon: 3
+  seed: 42
+
+export:
+  output_dir: datasets/poc_20species/yolo
+  split: [0.8, 0.1, 0.1]
+  min_confidence: 0.0
+  seed: 42
+
+training:
+  model: yolov8n.pt
+  epochs: 100
+  imgsz: 640
+  batch: 16
+  patience: 20
+  optimizer: auto
+  project: runs/train
+  name: poc_20species_yolov8n
+  exist_ok: true
