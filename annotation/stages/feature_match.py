@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from annotation.types import BBoxAnnotation, ImageAnnotation
+from annotation.schema import BBoxAnnotation, ImageAnnotation
 
 logger = logging.getLogger(__name__)
 

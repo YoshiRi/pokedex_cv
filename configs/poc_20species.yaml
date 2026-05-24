@@ -1,0 +1,63 @@
+# PoC experiment: 20-species subset
+#
+# Selection criteria:
+#   - Shape diversity (round / biped / quadruped / tall)
+#   - Generation spread (Gen1-9)
+#   - Include visually similar groups (Eevee evolutions) to stress-test discrimination
+#   - Iconic enough to have high-quality sprites across all types
+#
+# Run order:
+#   1. python data_collection/collect.py --config configs/poc_20species.yaml
+#   2. python annotation/pipeline.py --config configs/poc_20species.yaml --composite
+#   3. python annotation/export/to_yolo.py --config configs/poc_20species.yaml
+
+name: poc_20species
+
+pokemon_ids:
+  - 1    # Bulbasaur  (Gen1, quadruped, plant on back)
+  - 4    # Charmander (Gen1, biped, lizard)
+  - 7    # Squirtle   (Gen1, biped, turtle)
+  - 25   # Pikachu    (Gen1, iconic mouse)
+  - 39   # Jigglypuff (Gen1, round balloon)
+  - 52   # Meowth     (Gen1, cat - similar to Sprigatito/Litten)
+  - 94   # Gengar     (Gen1, ghost - dark, round with spikes)
+  - 133  # Eevee      (Gen1, fox - similar to its evolutions)
+  - 143  # Snorlax    (Gen1, large round blob)
+  - 150  # Mewtwo     (Gen1, humanoid)
+  - 196  # Espeon     (Gen2, Eevee evo - similar shape to Eevee/Umbreon)
+  - 197  # Umbreon    (Gen2, Eevee evo - similar shape to Eevee/Espeon)
+  - 448  # Lucario    (Gen4, humanoid canine)
+  - 471  # Glaceon    (Gen4, Eevee evo - similar shape to Eevee)
+  - 700  # Sylveon    (Gen6, Eevee evo - ribbon-covered)
+  - 725  # Litten     (Gen7, fire cat - similar to Meowth/Sprigatito)
+  - 728  # Popplio    (Gen7, water seal)
+  - 800  # Necrozma   (Gen7, legendary, geometric shape)
+  - 906  # Sprigatito (Gen9, grass cat - similar to Meowth/Litten)
+  - 1025 # Pecharunt  (Gen9, newest legendary)
+
+collection:
+  output_dir: raw_images
+  sprite_types:
+    - front_default
+    - back_default
+    - front_shiny
+    - back_shiny
+    - official_artwork
+    - home
+  rate_limit:
+    requests_per_second: 5
+  concurrency: 8
+
+annotation:
+  output_dir: datasets/poc_20species/raw_annotated
+  num_composites: 15       # 15 composites per sprite
+  output_size: 640
+  min_scale: 0.05
+  max_scale: 0.50
+  min_pokemon: 1
+  max_pokemon: 3
+
+export:
+  output_dir: datasets/poc_20species/yolo
+  split: [0.8, 0.1, 0.1]
+  min_confidence: 0.0
