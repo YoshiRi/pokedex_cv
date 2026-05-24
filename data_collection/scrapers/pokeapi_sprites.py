@@ -52,4 +52,4 @@ class PokeAPISpriteScraper(BaseScraper):
         ]
 
     def output_path(self, pokemon_id: int, sprite_type: str) -> Path:
-        return self.output_dir / "pokeapi_sprites" / f"{pokemon_id:04d}" / f"{sprite_type}.png"
+        return self.output_dir / "pokeapi" / f"{pokemon_id:04d}" / f"{sprite_type}.png"

@@ -29,7 +29,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from annotation.types import AnnotationStore, ImageAnnotation
+from annotation.schema import AnnotationStore, ImageAnnotation
 
 logger = logging.getLogger(__name__)
 

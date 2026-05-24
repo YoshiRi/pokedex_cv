@@ -3,6 +3,9 @@ raw_images/
 datasets/
 runs/
 
+# data/sprites/ は git 管理（PoC用小規模スプライト）
+# 全種スプライトに拡張する際は Git LFS を導入すること
+
 # モデルweights
 *.pt
 *.pth
@@ -18,3 +21,4 @@ dist/
 
 # OS
 .DS_Store
+.dedup_hashes.json

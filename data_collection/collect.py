@@ -1,17 +1,13 @@
 """CLI entry point for data collection.
 
+Accepts either the module-local config (data_collection/config.yaml)
+or a cross-cutting experiment config (e.g. configs/poc_20species.yaml).
+
 Usage:
-    # Collect all Pokemon (all sprite types from config)
-    python data_collection/collect.py
-
-    # Specific Pokemon IDs (good for debugging)
-    python data_collection/collect.py --ids 1 4 7 25
-
-    # Specific sprite types only
+    python data_collection/collect.py                             # default config
+    python data_collection/collect.py --config configs/poc_20species.yaml
+    python data_collection/collect.py --ids 1 4 7 25             # override IDs
     python data_collection/collect.py --sprite-types front_default official_artwork
-
-    # Custom config
-    python data_collection/collect.py --config data_collection/config.yaml
 """
 
 from __future__ import annotations
@@ -43,52 +39,78 @@ def load_config(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def normalize_config(cfg: dict) -> dict:
+    """Convert any config format to a unified internal dict.
+
+    Supports:
+      - data_collection/config.yaml  (has 'sources.pokeapi_sprites' key)
+      - configs/poc_*.yaml           (has 'collection' key)
+    """
+    if "collection" in cfg:
+        # Experiment config format (configs/poc_20species.yaml)
+        col = cfg["collection"]
+        return {
+            "output_dir": col.get("output_dir", cfg.get("output_dir", "raw_images")),
+            "pokemon_ids": cfg.get("pokemon_ids"),
+            "sprite_types": col.get("sprite_types"),
+            "requests_per_second": col.get("rate_limit", {}).get("requests_per_second", 5.0),
+            "concurrency": col.get("concurrency", 8),
+            "filters": cfg.get("filters", {}),
+        }
+    else:
+        # Module config format (data_collection/config.yaml)
+        spr = cfg.get("sources", {}).get("pokeapi_sprites", {})
+        return {
+            "output_dir": cfg.get("output_dir", "raw_images"),
+            "pokemon_ids": cfg.get("pokemon_ids"),
+            "sprite_types": spr.get("sprite_types"),
+            "requests_per_second": spr.get("rate_limit", {}).get("requests_per_second", 5.0),
+            "concurrency": spr.get("concurrency", 8),
+            "filters": cfg.get("filters", {}),
+        }
+
+
 def resolve_pokemon_ids(cfg_ids: list[int] | None) -> list[int]:
     if cfg_ids:
         return sorted(cfg_ids)
-    # Load from pokemon_classes.yaml to get the full list
     classes_path = Path(__file__).parent.parent / "pokemon_classes.yaml"
     if classes_path.exists():
         data = yaml.safe_load(classes_path.read_text())
         return sorted(data["pokemon"].keys())
-    # Fallback: standard range (update when new generations are added)
     logger.warning("pokemon_classes.yaml not found. Using id range 1-1025.")
     return list(range(1, 1026))
 
 
-async def run_collection(args: argparse.Namespace, cfg: dict) -> None:
-    output_dir = Path(cfg["output_dir"])
+async def run_collection(args: argparse.Namespace, cfg: dict) -> list[Path]:
+    ncfg = normalize_config(cfg)
+    output_dir = Path(ncfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    pokemon_ids = resolve_pokemon_ids(args.ids or cfg.get("pokemon_ids"))
-    logger.info("Collecting %d Pokemon", len(pokemon_ids))
+    pokemon_ids = resolve_pokemon_ids(args.ids or ncfg["pokemon_ids"])
+    sprite_types = args.sprite_types or ncfg["sprite_types"]
+    logger.info("Collecting %d Pokemon, sprite_types=%s", len(pokemon_ids), sprite_types)
 
-    # ---- PokeAPI Sprites ----
-    sprites_cfg = cfg["sources"]["pokeapi_sprites"]
-    if sprites_cfg.get("enabled", True):
-        sprite_types = args.sprite_types or sprites_cfg.get("sprite_types")
-        scraper = PokeAPISpriteScraper(
-            output_dir,
-            sprite_types=sprite_types,
-            requests_per_second=sprites_cfg["rate_limit"]["requests_per_second"],
-            concurrency=sprites_cfg.get("concurrency", 8),
-        )
-        logger.info("Running PokeAPISpriteScraper (sprite_types=%s)...", sprite_types)
-        summary = await scraper.collect(pokemon_ids)
-        logger.info("PokeAPISpriteScraper done: %s", summary)
+    scraper = PokeAPISpriteScraper(
+        output_dir,
+        sprite_types=sprite_types,
+        requests_per_second=ncfg["requests_per_second"],
+        concurrency=ncfg["concurrency"],
+    )
+    summary = await scraper.collect(pokemon_ids)
+    logger.info("Scraper done: %s", summary)
 
-    # ---- Filters ----
     collected = list(output_dir.rglob("*.png"))
-    logger.info("Collected %d images total", len(collected))
+    logger.info("Total PNG files: %d", len(collected))
 
-    filter_cfg = cfg.get("filters", {})
+    filter_cfg = ncfg.get("filters", {})
 
     if filter_cfg.get("dedup", {}).get("enabled", True):
         dedup = DedupFilter(
             output_dir,
-            phash_threshold=filter_cfg["dedup"].get("phash_threshold", 5),
+            phash_threshold=filter_cfg.get("dedup", {}).get("phash_threshold", 5),
         )
-        collected, _ = dedup.run(collected)
+        collected, removed = dedup.run(collected)
+        logger.info("After dedup: kept=%d removed=%d", len(collected), len(removed))
 
     if filter_cfg.get("quality", {}).get("enabled", True):
         qcfg = filter_cfg.get("quality", {})
@@ -101,32 +123,18 @@ async def run_collection(args: argparse.Namespace, cfg: dict) -> None:
                 small_sprite_threshold=qcfg.get("small_sprite_threshold", 128),
             )
         )
-        collected, _ = quality.run(collected)
+        collected, removed = quality.run(collected)
+        logger.info("After quality: kept=%d removed=%d", len(collected), len(removed))
 
-    logger.info("Final image count after filters: %d", len(collected))
+    logger.info("Final image count: %d", len(collected))
+    return collected
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Collect Pokemon images for training.")
-    p.add_argument(
-        "--config",
-        type=Path,
-        default=Path(__file__).parent / "config.yaml",
-        help="Path to config YAML",
-    )
-    p.add_argument(
-        "--ids",
-        type=int,
-        nargs="+",
-        metavar="ID",
-        help="National Pokedex IDs to collect (overrides config)",
-    )
-    p.add_argument(
-        "--sprite-types",
-        nargs="+",
-        metavar="TYPE",
-        help="Sprite types to collect (overrides config)",
-    )
+    p.add_argument("--config", type=Path, default=Path(__file__).parent / "config.yaml")
+    p.add_argument("--ids", type=int, nargs="+", metavar="ID")
+    p.add_argument("--sprite-types", nargs="+", metavar="TYPE")
     return p.parse_args()
 
 

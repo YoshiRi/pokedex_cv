@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from annotation.types import BBoxAnnotation, ImageAnnotation
+from annotation.schema import BBoxAnnotation, ImageAnnotation
 
 logger = logging.getLogger(__name__)
 
