@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from annotation.stages.alpha_bbox import AlphaBBoxStage
 from annotation.stages.composite_gen import CompositeConfig, CompositeGenStage
-from annotation.types import AnnotationStore
+from annotation.schema import AnnotationStore
 
 logging.basicConfig(
     level=logging.INFO,
