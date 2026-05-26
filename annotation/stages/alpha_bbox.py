@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from annotation.types import AnnotationStore, BBoxAnnotation, ImageAnnotation
+from annotation.schema import AnnotationStore, BBoxAnnotation, ImageAnnotation
 
 logger = logging.getLogger(__name__)
 

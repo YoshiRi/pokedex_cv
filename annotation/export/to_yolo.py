@@ -9,7 +9,18 @@ Output structure:
 Label file format (one bbox per line):
     {class_id} {cx} {cy} {w} {h}   (all values normalized 0-1)
 
+class_map (optional): ordered list of national Pokedex IDs.
+    Index = YOLO class_id, value = Pokedex number stored in BBoxAnnotation.
+    If omitted, bbox.pokemon_id is written as-is.
+
 Usage:
+    # With experiment config (recommended for PoC)
+    python annotation/export/to_yolo.py \\
+        --config configs/poc_20species.yaml \\
+        --annotations datasets/poc_20species/raw_annotated/annotations.jsonl \\
+        --output datasets/poc_20species/yolo
+
+    # Manual
     python annotation/export/to_yolo.py \\
         --annotations datasets/raw_annotated/annotations.jsonl \\
         --output datasets/pokemon_detection \\
@@ -29,7 +40,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from annotation.types import AnnotationStore, ImageAnnotation
+from annotation.schema import AnnotationStore, ImageAnnotation
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +51,26 @@ def export_yolo(
     split: tuple[float, float, float] = (0.8, 0.1, 0.1),
     *,
     min_confidence: float = 0.0,
-    class_names: list[str] | None = None,
+    class_map: list[int] | None = None,
     seed: int = 42,
 ) -> None:
+    """Export annotations to YOLO format.
+
+    Args:
+        annotations: list of ImageAnnotation records.
+        output_dir: destination root; images/ labels/ data.yaml written here.
+        split: (train, val, test) fractions summing to 1.0.
+        min_confidence: bboxes below this threshold are skipped.
+        class_map: ordered list of national Pokedex IDs → index = YOLO class_id.
+            Bboxes whose pokemon_id is not in the map are skipped.
+            If None, pokemon_id is used directly as class_id.
+        seed: random seed for split shuffling.
+    """
     assert abs(sum(split) - 1.0) < 1e-6, "Split ratios must sum to 1.0"
+
+    pokedex_to_class: dict[int, int] | None = None
+    if class_map is not None:
+        pokedex_to_class = {pid: idx for idx, pid in enumerate(class_map)}
 
     random.seed(seed)
     anns = [a for a in annotations if a.bboxes]
@@ -77,8 +104,15 @@ def export_yolo(
             for bbox in ann.bboxes:
                 if bbox.confidence < min_confidence:
                     continue
+                if pokedex_to_class is not None:
+                    class_id = pokedex_to_class.get(bbox.pokemon_id)
+                    if class_id is None:
+                        logger.debug("pokemon_id %d not in class_map; skipping bbox", bbox.pokemon_id)
+                        continue
+                else:
+                    class_id = bbox.pokemon_id
                 cx, cy, w, h = bbox.to_yolo(ann.width, ann.height)
-                lines.append(f"{bbox.pokemon_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
+                lines.append(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
 
             if lines:
                 lbl_path = lbl_dir / (src.stem + ".txt")
@@ -86,15 +120,23 @@ def export_yolo(
 
         logger.info("  %s: %d images", split_name, len(split_anns))
 
-    _write_data_yaml(output_dir, class_names)
+    _write_data_yaml(output_dir, class_map)
     logger.info("YOLO export done → %s", output_dir)
 
 
-def _write_data_yaml(output_dir: Path, class_names: list[str] | None) -> None:
-    if class_names is None:
-        # Lazy load from pokemon_classes.yaml
+def _write_data_yaml(output_dir: Path, class_map: list[int] | None) -> None:
+    class_names: list[str] | None = None
+
+    if class_map is not None:
         try:
-            sys.path.insert(0, str(output_dir.parent.parent))
+            sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+            from pokedex_cv.pokemon import get_name
+            class_names = [get_name(pid, "en") for pid in class_map]
+        except Exception:
+            logger.warning("Cannot load Pokemon names; using pokedex_id strings")
+            class_names = [str(pid) for pid in class_map]
+    else:
+        try:
             from pokedex_cv.pokemon import get_class_names
             class_names = get_class_names("en")
         except Exception:
@@ -120,11 +162,27 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--annotations", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--split", type=float, nargs=3, default=[0.8, 0.1, 0.1],
+    p.add_argument("--config", type=Path, default=None,
+                   help="Experiment config YAML (class_map, export settings read from here)")
+    p.add_argument("--split", type=float, nargs=3, default=None,
                    metavar=("TRAIN", "VAL", "TEST"))
-    p.add_argument("--min-confidence", type=float, default=0.0)
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--min-confidence", type=float, default=None)
+    p.add_argument("--seed", type=int, default=None)
     args = p.parse_args()
+
+    cfg: dict = {}
+    if args.config:
+        with args.config.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+
+    export_cfg = cfg.get("export", {})
+    class_map: list[int] | None = cfg.get("class_map")
+    split = tuple(args.split or export_cfg.get("split", [0.8, 0.1, 0.1]))
+    min_confidence = args.min_confidence if args.min_confidence is not None else export_cfg.get("min_confidence", 0.0)
+    seed = args.seed if args.seed is not None else export_cfg.get("seed", 42)
+
+    # Resolve output: CLI --output overrides config export.output_dir
+    output_dir = args.output or Path(export_cfg["output_dir"])
 
     store = AnnotationStore(args.annotations)
     annotations = store.load_all()
@@ -132,10 +190,11 @@ def main() -> None:
 
     export_yolo(
         annotations,
-        args.output,
-        tuple(args.split),
-        min_confidence=args.min_confidence,
-        seed=args.seed,
+        output_dir,
+        split,
+        min_confidence=min_confidence,
+        class_map=class_map,
+        seed=seed,
     )
 
 

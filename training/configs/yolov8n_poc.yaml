@@ -1,0 +1,33 @@
+# YOLOv8n hyperparameter overrides for PoC training
+# Passed as cfg= to YOLO.train(). Only keys that differ from Ultralytics defaults.
+# See: https://docs.ultralytics.com/usage/cfg/
+
+# Learning rate
+lr0: 0.01          # initial learning rate (SGD=0.01, Adam=0.001)
+lrf: 0.01          # final lr = lr0 * lrf (cosine annealing endpoint)
+warmup_epochs: 3.0
+
+# Augmentation — Ultralytics built-in mosaic/mixup/flip/scale/HSV
+mosaic: 1.0        # mosaic augmentation probability
+mixup: 0.1         # mixup probability (light, sprites are quite different)
+degrees: 10.0      # rotation ±10°
+translate: 0.1
+scale: 0.5
+fliplr: 0.5        # horizontal flip (many Pokemon are symmetric)
+flipud: 0.0        # vertical flip disabled (sprites have consistent orientation)
+hsv_h: 0.015       # hue jitter
+hsv_s: 0.7         # saturation jitter (helps shiny vs. normal distinction)
+hsv_v: 0.4         # value jitter
+
+# Regularisation
+weight_decay: 0.0005
+dropout: 0.0
+
+# Loss weights (defaults are fine for single-scale sprites)
+box: 7.5
+cls: 0.5
+dfl: 1.5
+
+# NMS (inference)
+conf: 0.25
+iou: 0.7
