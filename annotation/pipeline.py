@@ -4,18 +4,17 @@ Orchestrates alpha_bbox → composite_gen stages and saves results to
 annotations.jsonl for downstream export.
 
 Usage:
-    # Annotate collected sprites + generate composites
-    python annotation/pipeline.py \\
-        --raw-dir raw_images/pokeapi_sprites \\
-        --output datasets/raw_annotated \\
-        --composite \\
-        --num-composites 10 \\
-        --backgrounds backgrounds/
+    # From experiment config (recommended)
+    python annotation/pipeline.py --config configs/poc_20species.yaml
 
-    # Alpha annotation only (no composite)
+    # With overrides
+    python annotation/pipeline.py --config configs/poc_20species.yaml --num-composites 5
+
+    # Manual (no config)
     python annotation/pipeline.py \\
-        --raw-dir raw_images/pokeapi_sprites \\
-        --output datasets/raw_annotated
+        --raw-dir data/sprites/pokeapi_sprites \\
+        --output datasets/raw_annotated \\
+        --composite --num-composites 10
 """
 
 from __future__ import annotations
@@ -25,11 +24,13 @@ import logging
 import sys
 from pathlib import Path
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from annotation.schema import AnnotationStore
 from annotation.stages.alpha_bbox import AlphaBBoxStage
 from annotation.stages.composite_gen import CompositeConfig, CompositeGenStage
-from annotation.schema import AnnotationStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,12 +40,48 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _load_config(path: Path) -> dict:
+    with path.open(encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _resolve_args(args: argparse.Namespace, cfg: dict) -> argparse.Namespace:
+    """Fill in args from experiment config where CLI arg was not supplied."""
+    col_cfg = cfg.get("collection", {})
+    ann_cfg = cfg.get("annotation", {})
+
+    # raw_dir: {collection.output_dir}/pokeapi_sprites
+    if args.raw_dir is None:
+        base = col_cfg.get("output_dir")
+        if base:
+            args.raw_dir = str(Path(base) / "pokeapi_sprites")
+
+    if args.output is None:
+        args.output = ann_cfg.get("output_dir", "datasets/raw_annotated")
+
+    if not args.composite and ann_cfg.get("num_composites", 0) > 0:
+        args.composite = True
+
+    args.num_composites = args.num_composites or ann_cfg.get("num_composites", 5)
+    args.output_size = args.output_size or ann_cfg.get("output_size", 640)
+    args.min_scale = args.min_scale or ann_cfg.get("min_scale", 0.05)
+    args.max_scale = args.max_scale or ann_cfg.get("max_scale", 0.50)
+    args.min_pokemon = args.min_pokemon or ann_cfg.get("min_pokemon", 1)
+    args.max_pokemon = args.max_pokemon or ann_cfg.get("max_pokemon", 3)
+    args.seed = args.seed if args.seed is not None else ann_cfg.get("seed", 42)
+
+    return args
+
+
 def run_pipeline(args: argparse.Namespace) -> None:
+    if args.raw_dir is None:
+        logger.error("--raw-dir is required (or set collection.output_dir in --config)")
+        sys.exit(1)
+
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
     store_path = output_dir / "annotations.jsonl"
 
-    # Overwrite mode: remove existing store if requested
     if args.overwrite and store_path.exists():
         store_path.unlink()
         logger.info("Removed existing %s (--overwrite)", store_path)
@@ -64,7 +101,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # ------------------------------------------------------------------
     if args.composite:
         logger.info("=== Stage 2: composite_gen ===")
-        composites_dir = output_dir / "composites"
+        composites_dir = Path(args.output) / "composites"
         cfg = CompositeConfig(
             output_dir=composites_dir,
             num_composites=args.num_composites,
@@ -76,7 +113,6 @@ def run_pipeline(args: argparse.Namespace) -> None:
             backgrounds_dir=Path(args.backgrounds) if args.backgrounds else None,
             seed=args.seed,
         )
-        # Load alpha annotations as sprite source
         alpha_anns = [a for a in store.load_all() if a.stage == "alpha"]
         logger.info("Using %d alpha-annotated sprites as composite source", len(alpha_anns))
 
@@ -90,37 +126,36 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Annotation pipeline")
-    p.add_argument("--raw-dir", required=True,
-                   help="Root directory of collected sprites (e.g. raw_images/pokeapi_sprites)")
-    p.add_argument("--output", default="datasets/raw_annotated",
+    p.add_argument("--config", type=Path, default=None,
+                   help="Experiment config YAML (e.g. configs/poc_20species.yaml)")
+    p.add_argument("--raw-dir", default=None,
+                   help="Root directory of collected sprites")
+    p.add_argument("--output", default=None,
                    help="Output directory for annotations.jsonl and composites")
     p.add_argument("--overwrite", action="store_true",
                    help="Remove existing annotations.jsonl before running")
 
-    # Alpha stage
-    p.add_argument("--min-bbox-area", type=int, default=100,
-                   help="Minimum bbox area in pixels (alpha stage)")
+    p.add_argument("--min-bbox-area", type=int, default=100)
 
-    # Composite stage
-    p.add_argument("--composite", action="store_true",
-                   help="Run composite_gen stage after alpha_bbox")
-    p.add_argument("--num-composites", type=int, default=5,
-                   help="Composites to generate per sprite")
-    p.add_argument("--output-size", type=int, default=640,
-                   help="Composite image size (square, pixels)")
-    p.add_argument("--min-scale", type=float, default=0.05)
-    p.add_argument("--max-scale", type=float, default=0.50)
-    p.add_argument("--min-pokemon", type=int, default=1)
-    p.add_argument("--max-pokemon", type=int, default=3)
-    p.add_argument("--backgrounds", default=None,
-                   help="Directory of background images")
-    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--composite", action="store_true")
+    p.add_argument("--num-composites", type=int, default=None)
+    p.add_argument("--output-size", type=int, default=None)
+    p.add_argument("--min-scale", type=float, default=None)
+    p.add_argument("--max-scale", type=float, default=None)
+    p.add_argument("--min-pokemon", type=int, default=None)
+    p.add_argument("--max-pokemon", type=int, default=None)
+    p.add_argument("--backgrounds", default=None)
+    p.add_argument("--seed", type=int, default=None)
 
     return p.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    cfg: dict = {}
+    if args.config:
+        cfg = _load_config(args.config)
+    args = _resolve_args(args, cfg)
     run_pipeline(args)
 
 
