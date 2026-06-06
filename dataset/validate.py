@@ -138,6 +138,17 @@ def _validate_label_file(
             result.warnings.append(f"{lbl_path.name}:{i+1} — bbox height too small: {h:.6f}")
 
 
+def _collect_stems(dataset_dir: Path, split: str) -> set[str]:
+    img_dir = dataset_dir / "images" / split
+    if not img_dir.exists():
+        return set()
+    return {
+        p.stem
+        for ext in ("*.jpg", "*.jpeg", "*.png", "*.webp")
+        for p in img_dir.glob(ext)
+    }
+
+
 def validate_dataset(
     dataset_dir: Path,
     splits: tuple[str, ...] = SPLITS,
@@ -148,8 +159,11 @@ def validate_dataset(
     logger.info("Dataset: %s  nc=%d  names=%s...", dataset_dir, nc, names[:5])
 
     all_ok = True
+    split_stems: dict[str, set[str]] = {}
+
     for split in splits:
         result = validate_split(dataset_dir, split, nc)
+        split_stems[split] = _collect_stems(dataset_dir, split)
 
         status = "OK" if result.ok else "FAIL"
         logger.info(
@@ -165,6 +179,23 @@ def validate_dataset(
 
         if not result.ok:
             all_ok = False
+
+    # Cross-split duplicate detection
+    split_list = [s for s in splits if s in split_stems]
+    for i, s1 in enumerate(split_list):
+        for s2 in split_list[i + 1:]:
+            overlap = split_stems[s1] & split_stems[s2]
+            if overlap:
+                examples = sorted(overlap)[:5]
+                logger.error(
+                    "  ERROR   %d filename(s) appear in both '%s' and '%s': %s%s",
+                    len(overlap), s1, s2, examples,
+                    " ..." if len(overlap) > 5 else "",
+                )
+                all_ok = False
+
+    if all_ok:
+        logger.info("All checks passed.")
 
     return all_ok
 

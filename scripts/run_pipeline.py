@@ -4,9 +4,14 @@ Reads an experiment config and runs: collect → annotate → export → validat
 Training is separate (requires GPU/ultralytics).
 
 Usage:
+    # Full run (incremental: keeps existing annotations)
     python scripts/run_pipeline.py --config configs/poc_20species.yaml
-    python scripts/run_pipeline.py --config configs/poc_20species.yaml --steps collect annotate
-    python scripts/run_pipeline.py --config configs/poc_20species.yaml --overwrite
+
+    # Clean run (wipes annotations + export dir before running)
+    python scripts/run_pipeline.py --config configs/poc_20species.yaml --clean
+
+    # Partial run
+    python scripts/run_pipeline.py --config configs/poc_20species.yaml --steps annotate export validate --clean
 """
 
 from __future__ import annotations
@@ -128,7 +133,7 @@ def step_annotate(cfg: dict, *, overwrite: bool = False) -> None:
 # Step 3: export
 # ------------------------------------------------------------------
 
-def step_export(cfg: dict) -> Path:
+def step_export(cfg: dict, *, clean: bool = False) -> Path:
     from annotation.export.to_yolo import export_yolo
     from annotation.schema import AnnotationStore
 
@@ -154,6 +159,7 @@ def step_export(cfg: dict) -> Path:
         min_confidence=min_confidence,
         class_map=class_map,
         seed=seed,
+        clean=clean,
     )
     return output_dir
 
@@ -190,8 +196,15 @@ def parse_args() -> argparse.Namespace:
         metavar="STEP",
         help=f"Steps to run (default: all). Options: {ALL_STEPS}",
     )
-    p.add_argument("--overwrite", action="store_true",
-                   help="Overwrite existing annotations.jsonl")
+    p.add_argument(
+        "--clean",
+        action="store_true",
+        help=(
+            "Clean run: overwrite annotations.jsonl (annotate step) "
+            "and remove export output dir before writing (export step). "
+            "Use this to guarantee a fresh dataset with no leftover state."
+        ),
+    )
     return p.parse_args()
 
 
@@ -200,7 +213,7 @@ def main() -> None:
     cfg = load_config(args.config)
     steps = args.steps
 
-    logger.info("Running pipeline: %s  (config=%s)", steps, args.config)
+    logger.info("Running pipeline: %s  (config=%s, clean=%s)", steps, args.config, args.clean)
 
     dataset_dir: Path | None = None
 
@@ -208,10 +221,10 @@ def main() -> None:
         asyncio.run(step_collect(cfg))
 
     if "annotate" in steps:
-        step_annotate(cfg, overwrite=args.overwrite)
+        step_annotate(cfg, overwrite=args.clean)
 
     if "export" in steps:
-        dataset_dir = step_export(cfg)
+        dataset_dir = step_export(cfg, clean=args.clean)
 
     if "validate" in steps:
         if dataset_dir is None:
