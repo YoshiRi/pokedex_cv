@@ -181,6 +181,38 @@ def _write_data_yaml(output_dir: Path, class_map: list[int] | None) -> None:
     logger.info("Wrote %s (nc=%d)", yaml_path, len(class_names))
 
 
+def _resolve_class_map(cfg: dict) -> list[int] | None:
+    """Determine class_map from experiment config.
+
+    Priority:
+      1. Explicit ``class_map`` list in config → use as-is.
+      2. ``class_map`` absent/null + ``pokemon_ids`` list → sorted pokemon_ids.
+      3. ``class_map`` absent/null + ``pokemon_ids`` null → all IDs from
+         pokemon_classes.yaml (full 1025-species run).
+      4. Nothing resolvable → return None (bbox.pokemon_id used directly).
+    """
+    explicit = cfg.get("class_map")
+    if explicit is not None:
+        return explicit
+
+    pokemon_ids = cfg.get("pokemon_ids")
+    if pokemon_ids:
+        return sorted(pokemon_ids)
+
+    # Try to load all IDs from pokemon_classes.yaml
+    classes_path = Path(__file__).parent.parent.parent / "pokemon_classes.yaml"
+    if classes_path.exists():
+        try:
+            data = yaml.safe_load(classes_path.read_text(encoding="utf-8"))
+            all_ids = sorted(data["pokemon"].keys())
+            logger.info("class_map: auto-generated %d classes from pokemon_classes.yaml", len(all_ids))
+            return all_ids
+        except Exception as e:
+            logger.warning("Cannot auto-generate class_map: %s", e)
+
+    return None
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser()
@@ -202,7 +234,7 @@ def main() -> None:
             cfg = yaml.safe_load(f)
 
     export_cfg = cfg.get("export", {})
-    class_map: list[int] | None = cfg.get("class_map")
+    class_map: list[int] | None = _resolve_class_map(cfg)
     split = tuple(args.split or export_cfg.get("split", [0.8, 0.1, 0.1]))
     min_confidence = args.min_confidence if args.min_confidence is not None else export_cfg.get("min_confidence", 0.0)
     seed = args.seed if args.seed is not None else export_cfg.get("seed", 42)

@@ -1,0 +1,62 @@
+name: full_1025species
+
+# null = collect all 1025 national Pokedex numbers (loaded from pokemon_classes.yaml)
+pokemon_ids: null
+
+# null = auto-generated at export time from pokemon_classes.yaml
+# class_id = index in sorted ID list (0-indexed contiguous)
+# class_id 0 = Bulbasaur (#1), class_id 1 = Ivysaur (#2), ..., class_id 1024 = Pecharunt (#1025)
+class_map: null
+
+collection:
+  # raw_images/ is gitignored — sprites are not committed for the full dataset
+  output_dir: raw_images
+  sprite_types:
+    - front_default    # 96×96 pixel art — main identifier
+    - front_shiny      # color variant, same structure
+    - official_artwork # 475×475 high-quality art — good for real-image transfer
+    - home             # 680×680 3D-style render
+  # back sprites omitted: add minimal recognition value, double download volume
+  rate_limit:
+    requests_per_second: 8
+  concurrency: 12
+
+filters:
+  dedup:
+    enabled: true
+    phash_threshold: 3
+  quality:
+    enabled: true
+    min_width: 32
+    min_height: 32
+    min_nontransparent_pixels: 10
+    min_laplacian_variance: 50
+    small_sprite_threshold: 128
+
+annotation:
+  output_dir: datasets/full_1025species/raw_annotated
+  composites_dir: datasets/full_1025species/raw_annotated/composites
+  num_composites: 5    # lower than PoC (15) to keep dataset manageable
+  output_size: 640
+  min_scale: 0.05
+  max_scale: 0.50
+  min_pokemon: 1
+  max_pokemon: 3
+  seed: 42
+
+export:
+  output_dir: datasets/full_1025species/yolo
+  split: [0.8, 0.1, 0.1]
+  min_confidence: 0.0
+  seed: 42
+
+training:
+  model: yolov8n.pt    # start with nano; upgrade to yolov8s/m if accuracy insufficient
+  epochs: 100
+  imgsz: 640
+  batch: 32            # larger batch than PoC (more classes need more gradient signal)
+  patience: 20
+  optimizer: auto
+  project: runs/train
+  name: full_1025species_yolov8n
+  exist_ok: true

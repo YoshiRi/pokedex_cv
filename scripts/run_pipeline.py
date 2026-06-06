@@ -134,7 +134,7 @@ def step_annotate(cfg: dict, *, overwrite: bool = False) -> None:
 # ------------------------------------------------------------------
 
 def step_export(cfg: dict, *, clean: bool = False) -> Path:
-    from annotation.export.to_yolo import export_yolo
+    from annotation.export.to_yolo import _resolve_class_map, export_yolo
     from annotation.schema import AnnotationStore
 
     logger.info("=== Step 3: export ===")
@@ -143,7 +143,7 @@ def step_export(cfg: dict, *, clean: bool = False) -> Path:
 
     annotations_path = Path(ann_cfg.get("output_dir", "datasets/raw_annotated")) / "annotations.jsonl"
     output_dir = Path(export_cfg["output_dir"])
-    class_map: list[int] | None = cfg.get("class_map")
+    class_map = _resolve_class_map(cfg)
     split = tuple(export_cfg.get("split", [0.8, 0.1, 0.1]))
     seed = export_cfg.get("seed", 42)
     min_confidence = export_cfg.get("min_confidence", 0.0)
