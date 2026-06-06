@@ -18,50 +18,55 @@
 ```
 pokedex_cv/
 │
-├── data_collection/              # フェーズ1: オンライン画像収集
+├── data_collection/              # フェーズ1: オンライン画像収集 ✅
 │   ├── scrapers/
 │   │   ├── base_scraper.py       # レート制限・リトライ共通処理
-│   │   ├── bulbapedia.py         # 公式スプライト・アートワーク
-│   │   └── serebii.py
+│   │   └── pokeapi_sprites.py    # PokeAPI/sprites GitHub raw
 │   ├── filters/
-│   │   ├── dedup.py              # perceptual hash で重複除去
+│   │   ├── dedup.py              # perceptual hash で重複除去（同一種は比較スキップ）
 │   │   └── quality_check.py     # 解像度・ブラー検出
 │   └── config.yaml               # 収集対象種・ソース・保存先設定
 │
-├── annotation/                   # フェーズ2: 自動アノテーションパイプライン
-│   ├── pipeline.py               # ステージ群を束ねる全体フロー
+├── annotation/                   # フェーズ2: 自動アノテーションパイプライン ✅
+│   ├── pipeline.py               # ステージ群を束ねる全体フロー（--config 対応）
+│   ├── schema.py                 # BBoxAnnotation / ImageAnnotation / AnnotationStore
 │   ├── stages/
 │   │   ├── alpha_bbox.py         # PNG透過→非透過領域からbbox直接生成
-│   │   ├── sam_segment.py        # SAM2でセグメンテーション→bbox変換
-│   │   ├── feature_match.py      # ORB/SIFT/LoFTRでスプライトをシーンに照合
-│   │   └── composite_gen.py      # スプライト+多様な背景の合成画像生成
+│   │   ├── composite_gen.py      # スプライト+多様な背景の合成画像生成
+│   │   ├── sam_segment.py        # SAM2でセグメンテーション→bbox変換（オプション）
+│   │   └── feature_match.py      # ORB/SIFT/LoFTRでスプライトをシーンに照合（計画中）
 │   ├── review/
 │   │   └── visualize.py          # 自動生成アノテーションの目視確認ツール
 │   └── export/
-│       ├── to_yolo.py            # YOLO形式 (.txt + data.yaml)
-│       └── to_coco.py            # COCO形式 (annotations.json)
+│       ├── to_yolo.py            # YOLO形式（class_map によるID変換対応）
+│       └── to_coco.py            # COCO形式
 │
-├── dataset/                      # フェーズ3: データセット管理
-│   ├── split.py                  # train/val/test 分割
-│   ├── augment.py                # albumentations によるデータ拡張
-│   └── validate.py               # ラベル欠損・bbox越境等の整合性チェック
+├── dataset/                      # フェーズ3: データセット検証 ✅
+│   └── validate.py               # bbox越境・ラベル欠損・class_id整合性チェック
+│   # 注: train/val分割・データ拡張は Ultralytics が内蔵しているため独自実装不要
 │
-├── training/                     # フェーズ4: 学習
+├── training/                     # フェーズ4: 学習 ✅
 │   ├── configs/
-│   │   ├── yolov8n.yaml          # YOLOv8 nano
-│   │   ├── yolov11n.yaml         # YOLOv11 nano
-│   │   └── rtdetr_r50.yaml       # RT-DETR ResNet50
-│   ├── train.py                  # --config で切り替えるエントリポイント
-│   ├── evaluate.py               # mAP・混同行列等の評価
-│   └── export.py                 # ONNX / TensorRT エクスポート
+│   │   └── yolov8n_poc.yaml      # YOLOv8n ハイパーパラメータオーバーライド
+│   ├── train.py                  # Ultralytics YOLO.train() ラッパー
+│   ├── evaluate.py               # mAP・クラス別AP / 実画像推論モード
+│   └── export.py                 # ONNX / TorchScript エクスポート
+│
+├── configs/                      # 実験設定（再現性の単位） ✅
+│   └── poc_20species.yaml        # PoC: 20種、class_map、各フェーズのパラメータ
+│
+├── scripts/                      # ユーティリティスクリプト ✅
+│   ├── fetch_pokemon_names.py    # pokemon_classes.yaml 生成
+│   └── run_pipeline.py           # 実験 config から全工程を一括実行
 │
 ├── docs/                         # 設計ドキュメント
 │
-├── raw_images/                   # 収集した生画像 (.gitignore)
+├── data/sprites/                 # PoC スプライト（git 管理）
+│   └── pokeapi_sprites/{id:04d}/{sprite_type}.png
 ├── datasets/                     # 変換済みデータセット (.gitignore)
 ├── runs/                         # 学習ログ・weights (.gitignore)
 │
-├── pokemon_classes.yaml          # 全ポケモン名クラスID定義
+├── pokemon_classes.yaml          # 全ポケモン名・クラスID定義（1025種）
 ├── pyproject.toml
 ├── .gitignore
 └── README.md
@@ -75,65 +80,107 @@ pokedex_cv/
 
 - スクレイパーは `BaseScraper` を継承する形で実装し、ソースごとに分離する
 - レート制限・リトライは基底クラスで一元管理
-- `config.yaml` で収集対象ポケモン・ソース・保存先を設定する
 - 収集後に重複除去（perceptual hash）と品質チェック（解像度・ブラー）を実施する
+- **dedup の設計**: 同一ポケモンのスプライト（通常と色違い）は phash で比較しない。
+  色違いは構造が同じで色だけ異なるため phash が一致してしまうため。
+
+**実装済みソース:**
+- PokeAPI/sprites (GitHub raw) — 公式スプライト・公式アートワーク・HOME スプライト
+
+**計画中ソース:**
+- Bulbapedia — 高解像度アートワーク・TCGカード画像
 
 ### フェーズ2: 自動アノテーション (`annotation/`)
 
 アノテーションは画像種別に応じて以下のステージを段階的に適用する。
 
-| ステージ | 対象画像 | 手法 | bbox精度 |
-|---|---|---|---|
-| `alpha_bbox.py` | 公式スプライトPNG（透過背景） | αチャンネルのnon-zero領域から直接生成 | 完璧・即座 |
-| `composite_gen.py` | 合成画像（スプライト+背景貼付） | 貼付座標から直接生成 | 完璧 |
-| `sam_segment.py` | ゲーム画面・実写 | SAM2でセグメンテーション→bbox変換 | 高精度 |
-| `feature_match.py` | スプライトが写り込む複雑な画像 | ORB/SIFT/LoFTRでテンプレート照合 | 中〜高精度 |
+| ステージ | 対象画像 | 手法 | bbox精度 | 状態 |
+|---|---|---|---|---|
+| `alpha_bbox.py` | 公式スプライトPNG（透過背景） | αチャンネルのnon-zero領域から直接生成 | 完璧・即座 | ✅ |
+| `composite_gen.py` | 合成画像（スプライト+背景貼付） | 貼付座標から直接生成 | 完璧 | ✅ |
+| `sam_segment.py` | ゲーム画面・実写 | SAM2でセグメンテーション→bbox変換 | 高精度 | オプション |
+| `feature_match.py` | スプライトが写り込む複雑な画像 | ORB/SIFT/LoFTRでテンプレート照合 | 中〜高精度 | 計画中 |
 
-**基本方針**: 学習データの大半はスプライト合成（`composite_gen.py`）で賄い、
-SAM・特徴点マッチングは補完・精度向上用として活用する。
+**アノテーションの内部形式**: `annotations.jsonl`（1行1レコード）
+`BBoxAnnotation.pokemon_id` は常に国際図鑑番号を格納する。YOLO class_id への変換は
+エクスポート時に `class_map` で行う（アノテーション自体は実験設定に依存しない）。
 
-`pipeline.py` が各ステージを束ね、画像ソース（スプライト/実写等）に応じて
-適切なステージを選択して実行する。
+### フェーズ3: データセット検証 (`dataset/`)
 
-### フェーズ3: データセット管理 (`dataset/`)
+**train/val分割と拡張は Ultralytics が担う**ため独自実装不要。
 
-- アノテーション済みデータを受け取り、train/val/test に分割する
-- albumentations でデータ拡張を行う
-- `validate.py` でbbox越境・ラベル欠損等の整合性チェックを実施してから学習に渡す
+`validate.py` のみ実装する。チェック内容:
+- bbox 座標が [0, 1] 範囲に収まっているか（YOLO 正規化）
+- class_id が `data.yaml` の nc 範囲内か
+- ラベルファイルが存在しない画像の検出
+- bbox 面積が極小（幅/高さ < 1px 相当）でないか
 
 ### フェーズ4: 学習 (`training/`)
 
-- YOLOv8 / YOLOv11 / RT-DETR を `configs/` 以下の設定ファイルで切り替えられる設計にする
-- `train.py --config configs/yolov8n.yaml` のように呼び出す
-- Ultralytics API を共通インターフェースとして利用する（YOLOとRT-DETRを同じAPIで扱える）
-- `evaluate.py` で mAP・クラス別AP・混同行列を出力する
-- `export.py` で ONNX / TensorRT 形式にエクスポートする
+- Ultralytics API を共通インターフェースとして利用（YOLOv8 / RT-DETR を同じAPIで扱える）
+- `train.py --config configs/{experiment}.yaml` で実験設定を切り替える
+- `evaluate.py` には2モード:
+  - `val`: 合成データの mAP@50 / mAP@50:95（自動評価）
+  - `real`: 実画像への推論と検出数集計（sim-to-real ギャップ確認）
+- `export.py` で ONNX / TorchScript エクスポート
+
+### 実験管理 (`configs/`)
+
+実験の再現性単位として `configs/{name}.yaml` を使う。
+
+1ファイルに以下を統合:
+- `class_map`: 図鑑番号→YOLO class_id の変換テーブル
+- `collection`: 収集対象・ソース設定
+- `annotation`: composite_gen のパラメータ
+- `export`: データセット出力先・split 比率
+- `training`: モデル・エポック数・batch サイズ等
+
+### E2E ランナー (`scripts/run_pipeline.py`)
+
+実験 config を渡すと collect → annotate → export → validate を一括実行する。
+学習は GPU 環境（ローカル / Colab）で別途実行する想定。
+
+---
+
+## クラスID設計
+
+```
+国際図鑑番号 (1-1025) = pokemon_id    ← アノテーション内部表現
+              ↓ export 時に class_map で変換
+YOLO class_id (0-indexed contiguous)  ← ラベルファイル内
+```
+
+PoC (20種) の class_map:
+- index 0 = Pokedex #1 (Bulbasaur)
+- index 1 = Pokedex #4 (Charmander)
+- ...
+- index 19 = Pokedex #1025 (Pecharunt)
+
+フル (1025種) では class_map = [1, 2, 3, ..., 1025]、class_id = pokedex_id - 1。
 
 ---
 
 ## gitignore 方針
 
-学習データ・生画像・weightsはリポジトリに含めない。
-
-```
-raw_images/
-datasets/
-runs/
-*.pt
-*.onnx
-```
+| パス | 管理 | 理由 |
+|---|---|---|
+| `data/sprites/pokeapi_sprites/` | git 追跡 | 小サイズ（~5MB）、再現性のため |
+| `datasets/` | .gitignore | 大容量・生成物 |
+| `runs/` | .gitignore | 学習ログ・weights |
+| `*.pt` / `*.onnx` | .gitignore | 大容量 |
 
 ---
 
-## 依存ライブラリ（予定）
+## 依存ライブラリ
 
 | ライブラリ | 用途 |
 |---|---|
-| `ultralytics` | YOLOv8/v11/RT-DETR の学習・推論 |
-| `segment-anything-2` | SAM2 による自動セグメンテーション |
-| `opencv-python` | 特徴点マッチング・画像処理 |
-| `albumentations` | データ拡張 |
-| `imagehash` | perceptual hash による重複除去 |
-| `httpx` / `aiohttp` | 非同期スクレイピング |
+| `ultralytics` | YOLOv8/RT-DETR の学習・推論・エクスポート |
+| `httpx` | 非同期スプライト収集 |
 | `Pillow` | 画像読み書き・合成 |
-| `pydantic` | 設定ファイルのバリデーション |
+| `numpy` | alpha bbox 抽出 |
+| `imagehash` | perceptual hash による重複除去 |
+| `opencv-python` | 特徴点マッチング・Laplacian blur 検出 |
+| `albumentations` | （Ultralytics 組み込み拡張で代替、将来的な独自拡張用） |
+| `pyyaml` | 設定ファイル読み書き |
+| `segment-anything-2` | SAM2（オプション依存） |
