@@ -19,8 +19,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -33,6 +35,52 @@ logger = logging.getLogger(__name__)
 def load_config(path: Path) -> dict:
     with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _dataset_fingerprint(data_yaml_path: Path) -> str:
+    """Short content hash of data.yaml — changes whenever the dataset is regenerated.
+
+    Cheap stand-in for proper dataset versioning: lets a run manifest answer
+    "was this the same dataset export as that other run?" without re-reading
+    every image/label file.
+    """
+    return hashlib.sha256(data_yaml_path.read_bytes()).hexdigest()[:12]
+
+
+def _write_run_manifest(
+    run_dir: Path,
+    *,
+    config_path: Path | None,
+    data_path: Path,
+    data_cfg: dict,
+    kwargs: dict,
+) -> None:
+    """Record what produced this run's weights: config, dataset, hyperparameters.
+
+    Written into the same directory Ultralytics saves weights/ to, so
+    `runs/train/<name>/` is self-describing — answers "which experiment
+    config and which dataset export produced best.pt?" without needing to
+    cross-reference shell history.
+    """
+    manifest = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "experiment_config": str(config_path) if config_path else None,
+        "model": kwargs.get("model"),
+        "hyp": kwargs.get("cfg"),
+        "epochs": kwargs.get("epochs"),
+        "imgsz": kwargs.get("imgsz"),
+        "batch": kwargs.get("batch"),
+        "dataset": {
+            "data_yaml": str(data_path),
+            "fingerprint": _dataset_fingerprint(data_path),
+            "nc": data_cfg.get("nc"),
+            "names": data_cfg.get("names"),
+        },
+    }
+    manifest_path = run_dir / "experiment_manifest.yaml"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        yaml.dump(manifest, f, allow_unicode=True, sort_keys=False)
+    logger.info("Wrote run manifest → %s", manifest_path)
 
 
 def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
@@ -73,7 +121,7 @@ def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
     return kwargs
 
 
-def train(kwargs: dict, resume: bool = False) -> None:
+def train(kwargs: dict, resume: bool = False, config_path: Path | None = None) -> None:
     data_path = Path(kwargs["data"])
     if not data_path.exists():
         logger.error(
@@ -111,6 +159,14 @@ def train(kwargs: dict, resume: bool = False) -> None:
     results = model.train(**kwargs)
     logger.info("Training complete. Results saved to %s", results.save_dir)
 
+    _write_run_manifest(
+        Path(results.save_dir),
+        config_path=config_path,
+        data_path=data_path,
+        data_cfg=data_cfg,
+        kwargs={**kwargs, "model": model_arg},
+    )
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train YOLO Pokemon detector")
@@ -124,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--imgsz", type=int, default=None)
     p.add_argument("--batch", type=int, default=None)
     p.add_argument("--device", type=str, default=None,
-                   help="Device: 0, 0,1, cpu (default: auto)")
+                   help="Device: 0, 0,1, cpu, mps (Apple Silicon GPU) — default: Ultralytics auto-selects")
     p.add_argument("--project", type=str, default=None,
                    help="Output project directory (default: runs/train)")
     p.add_argument("--name", type=str, default=None,
@@ -159,7 +215,7 @@ def main() -> None:
         kwargs["model"], kwargs["data"], kwargs["epochs"], kwargs["imgsz"], kwargs["batch"],
         kwargs.get("cfg", "none"),
     )
-    train(kwargs, resume=args.resume)
+    train(kwargs, resume=args.resume, config_path=args.config)
 
 
 if __name__ == "__main__":

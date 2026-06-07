@@ -36,6 +36,9 @@ python scripts/run_pipeline.py --config configs/poc_20species.yaml --clean
 # Train (requires GPU + ultralytics)
 python training/train.py --config configs/poc_20species.yaml
 
+# Apple Silicon (Mac): pass --device mps to use the GPU via Metal
+python training/train.py --config configs/poc_20species.yaml --device mps
+
 # Evaluate
 python training/evaluate.py --config configs/poc_20species.yaml
 python training/evaluate.py --config configs/poc_20species.yaml --mode real --images /path/to/photos/

@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -78,7 +79,52 @@ def _resolve_eval_params(cfg: dict, args: argparse.Namespace) -> tuple[int, int]
     return imgsz, batch
 
 
-def evaluate_val(weights: Path, data_yaml: str, imgsz: int, batch: int, device: str | None) -> None:
+def _write_eval_report(
+    report_path: Path,
+    *,
+    weights: Path,
+    data_yaml: str,
+    config_path: Path | None,
+    metrics,
+    names: dict,
+) -> None:
+    """Persist mAP / per-class AP next to the weights that produced them.
+
+    `evaluate_val` already prints these to stdout, but terminal scrollback
+    isn't a comparable record across runs — write a small YAML report so
+    "what mAP did this checkpoint get, on what data, under what config" can
+    be answered later without re-running validation.
+    """
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "weights": str(weights),
+        "data_yaml": str(data_yaml),
+        "experiment_config": str(config_path) if config_path else None,
+        "map50": float(metrics.box.map50),
+        "map50_95": float(metrics.box.map),
+        "precision": float(metrics.box.mp),
+        "recall": float(metrics.box.mr),
+    }
+    if hasattr(metrics.box, "ap_class_index") and metrics.box.ap_class_index is not None:
+        report["per_class_ap50"] = {
+            str(names.get(idx, idx)): float(ap)
+            for idx, ap in zip(metrics.box.ap_class_index, metrics.box.ap50)
+        }
+
+    with report_path.open("w", encoding="utf-8") as f:
+        yaml.dump(report, f, allow_unicode=True, sort_keys=False)
+    logger.info("Wrote eval report → %s", report_path)
+
+
+def evaluate_val(
+    weights: Path,
+    data_yaml: str,
+    imgsz: int,
+    batch: int,
+    device: str | None,
+    *,
+    config_path: Path | None = None,
+) -> None:
     """Run YOLO validation on the synthetic val split."""
     try:
         from ultralytics import YOLO
@@ -113,6 +159,16 @@ def evaluate_val(weights: Path, data_yaml: str, imgsz: int, batch: int, device: 
         names = model.names
         for idx, ap in zip(metrics.box.ap_class_index, metrics.box.ap50):
             print(f"  {names.get(idx, idx):20s}: {ap:.4f}")
+
+    # Co-locate the metrics report with the weights — runs/train/<name>/eval_report.yaml
+    _write_eval_report(
+        weights.parent.parent / "eval_report.yaml",
+        weights=weights,
+        data_yaml=data_yaml,
+        config_path=config_path,
+        metrics=metrics,
+        names=model.names,
+    )
 
 
 def evaluate_real(
@@ -207,7 +263,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch", type=int, default=None)
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--iou", type=float, default=0.7)
-    p.add_argument("--device", type=str, default=None)
+    p.add_argument("--device", type=str, default=None,
+                   help="Device: 0, 0,1, cpu, mps (Apple Silicon GPU) — default: Ultralytics auto-selects")
 
     return p.parse_args()
 
@@ -233,7 +290,7 @@ def main() -> None:
         if not data_yaml:
             logger.error("No data.yaml found. Use --data or set export.output_dir in config.")
             sys.exit(1)
-        evaluate_val(weights, data_yaml, imgsz, batch, args.device)
+        evaluate_val(weights, data_yaml, imgsz, batch, args.device, config_path=args.config)
 
     else:  # real
         if args.images is None:
