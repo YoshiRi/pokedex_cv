@@ -38,13 +38,35 @@ def load_config(path: Path) -> dict:
 
 
 def _dataset_fingerprint(data_yaml_path: Path) -> str:
-    """Short content hash of data.yaml — changes whenever the dataset is regenerated.
+    """Short content hash of data.yaml — changes whenever nc/names/path change.
 
-    Cheap stand-in for proper dataset versioning: lets a run manifest answer
-    "was this the same dataset export as that other run?" without re-reading
-    every image/label file.
+    Weak on its own: data.yaml stays identical even if the underlying images,
+    labels, or train/val/test split membership are regenerated differently
+    (e.g. different export seed). Pair with `_labels_fingerprint`.
     """
     return hashlib.sha256(data_yaml_path.read_bytes()).hexdigest()[:12]
+
+
+def _labels_fingerprint(dataset_dir: Path) -> str | None:
+    """Aggregate content hash over labels/**/*.txt (path + bytes, sorted).
+
+    Captures what data.yaml can't: actual bbox/class content of every label
+    file *and* which split directory each one lives in — so re-exporting with
+    a different seed, class_map, or annotation set changes this hash even
+    when nc/names/path in data.yaml stay the same. Returns None if there's no
+    labels/ directory (e.g. dataset not yet exported).
+    """
+    labels_root = dataset_dir / "labels"
+    if not labels_root.is_dir():
+        return None
+    paths = sorted(labels_root.rglob("*.txt"))
+    if not paths:
+        return None
+    digest = hashlib.sha256()
+    for p in paths:
+        digest.update(p.relative_to(labels_root).as_posix().encode("utf-8"))
+        digest.update(p.read_bytes())
+    return digest.hexdigest()[:12]
 
 
 def _write_run_manifest(
@@ -59,8 +81,8 @@ def _write_run_manifest(
 
     Written into the same directory Ultralytics saves weights/ to, so
     `runs/train/<name>/` is self-describing — answers "which experiment
-    config and which dataset export produced best.pt?" without needing to
-    cross-reference shell history.
+    config and which dataset export produced best.pt, on which device, with
+    which optimizer?" without needing to cross-reference shell history.
     """
     manifest = {
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -70,9 +92,14 @@ def _write_run_manifest(
         "epochs": kwargs.get("epochs"),
         "imgsz": kwargs.get("imgsz"),
         "batch": kwargs.get("batch"),
+        # None means Ultralytics auto-selected (records what was *requested*,
+        # not necessarily what ran — see Ultralytics' own args.yaml for that)
+        "device": kwargs.get("device"),
+        "optimizer": kwargs.get("optimizer"),
         "dataset": {
             "data_yaml": str(data_path),
-            "fingerprint": _dataset_fingerprint(data_path),
+            "data_yaml_fingerprint": _dataset_fingerprint(data_path),
+            "labels_fingerprint": _labels_fingerprint(data_path.parent),
             "nc": data_cfg.get("nc"),
             "names": data_cfg.get("names"),
         },
