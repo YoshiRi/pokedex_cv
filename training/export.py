@@ -40,15 +40,19 @@ def load_config(path: Path) -> dict:
 
 def _resolve_weights(cfg: dict, args: argparse.Namespace) -> Path:
     if args.weights:
-        return Path(args.weights)
-    train_cfg = cfg.get("training", {})
-    project = Path(args.project or train_cfg.get("project", "runs/train"))
-    name = args.name or train_cfg.get("name", cfg.get("name", "yolo_train"))
-    best = project / name / "weights" / "best.pt"
-    if not best.exists():
-        logger.error("Weights not found at %s. Run training first or pass --weights.", best)
+        weights = Path(args.weights)
+    else:
+        train_cfg = cfg.get("training", {})
+        project = Path(args.project or train_cfg.get("project", "runs/train"))
+        name = args.name or train_cfg.get("name", cfg.get("name", "yolo_train"))
+        weights = project / name / "weights" / "best.pt"
+
+    if not weights.exists():
+        # Fail fast with a clear message — otherwise Ultralytics treats a missing
+        # .pt path as a model name and tries to fetch it from GitHub releases.
+        logger.error("Weights not found at %s. Run training first or pass --weights.", weights)
         sys.exit(1)
-    return best
+    return weights
 
 
 def export_model(weights: Path, fmt: str, imgsz: int, device: str | None, half: bool) -> Path:
@@ -92,7 +96,8 @@ def parse_args() -> argparse.Namespace:
         metavar="FORMAT",
         help=f"Export format(s): {SUPPORTED_FORMATS}. Default: onnx",
     )
-    p.add_argument("--imgsz", type=int, default=640)
+    p.add_argument("--imgsz", type=int, default=None,
+                   help="Inference size (default: training.imgsz from --config, else 640)")
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--half", action="store_true",
                    help="Export FP16 (requires CUDA or CoreML)")
@@ -112,9 +117,11 @@ def main() -> None:
         cfg = load_config(args.config)
 
     weights = _resolve_weights(cfg, args)
+    imgsz = args.imgsz if args.imgsz is not None else cfg.get("training", {}).get("imgsz", 640)
+    logger.info("Resolved params: weights=%s imgsz=%d formats=%s", weights, imgsz, args.format)
 
     for fmt in args.format:
-        export_model(weights, fmt, args.imgsz, args.device, args.half)
+        export_model(weights, fmt, imgsz, args.device, args.half)
 
 
 if __name__ == "__main__":
