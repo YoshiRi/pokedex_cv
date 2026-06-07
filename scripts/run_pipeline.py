@@ -77,15 +77,16 @@ async def step_collect(cfg: dict) -> None:
 
     filter_cfg = cfg.get("filters", {})
 
-    if filter_cfg.get("dedup", {}).get("enabled", True):
+    dedup_cfg = filter_cfg.get("dedup", {})
+    if dedup_cfg.get("enabled", True):
         dedup = DedupFilter(
             output_dir,
-            phash_threshold=filter_cfg["dedup"].get("phash_threshold", 3),
+            phash_threshold=dedup_cfg.get("phash_threshold", 3),
         )
         collected, _ = dedup.run(collected)
 
-    if filter_cfg.get("quality", {}).get("enabled", True):
-        qcfg = filter_cfg.get("quality", {})
+    qcfg = filter_cfg.get("quality", {})
+    if qcfg.get("enabled", True):
         quality = QualityFilter(
             QualityConfig(
                 min_width=qcfg.get("min_width", 32),
@@ -134,7 +135,7 @@ def step_annotate(cfg: dict, *, overwrite: bool = False) -> None:
 # ------------------------------------------------------------------
 
 def step_export(cfg: dict, *, clean: bool = False) -> Path:
-    from annotation.export.to_yolo import export_yolo
+    from annotation.export.to_yolo import _resolve_class_map, export_yolo
     from annotation.schema import AnnotationStore
 
     logger.info("=== Step 3: export ===")
@@ -143,7 +144,7 @@ def step_export(cfg: dict, *, clean: bool = False) -> Path:
 
     annotations_path = Path(ann_cfg.get("output_dir", "datasets/raw_annotated")) / "annotations.jsonl"
     output_dir = Path(export_cfg["output_dir"])
-    class_map: list[int] | None = cfg.get("class_map")
+    class_map = _resolve_class_map(cfg)
     split = tuple(export_cfg.get("split", [0.8, 0.1, 0.1]))
     seed = export_cfg.get("seed", 42)
     min_confidence = export_cfg.get("min_confidence", 0.0)
