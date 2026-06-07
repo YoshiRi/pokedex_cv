@@ -77,15 +77,16 @@ async def step_collect(cfg: dict) -> None:
 
     filter_cfg = cfg.get("filters", {})
 
-    if filter_cfg.get("dedup", {}).get("enabled", True):
+    dedup_cfg = filter_cfg.get("dedup", {})
+    if dedup_cfg.get("enabled", True):
         dedup = DedupFilter(
             output_dir,
-            phash_threshold=filter_cfg["dedup"].get("phash_threshold", 3),
+            phash_threshold=dedup_cfg.get("phash_threshold", 3),
         )
         collected, _ = dedup.run(collected)
 
-    if filter_cfg.get("quality", {}).get("enabled", True):
-        qcfg = filter_cfg.get("quality", {})
+    qcfg = filter_cfg.get("quality", {})
+    if qcfg.get("enabled", True):
         quality = QualityFilter(
             QualityConfig(
                 min_width=qcfg.get("min_width", 32),
