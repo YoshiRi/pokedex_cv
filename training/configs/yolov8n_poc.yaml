@@ -3,6 +3,10 @@
 # See: https://docs.ultralytics.com/usage/cfg/
 
 # Learning rate
+# NOTE: lr0/lrf/momentum are IGNORED when the experiment config sets
+# `training.optimizer: auto` — Ultralytics auto-selects optimizer/lr/momentum
+# from the dataset size in that mode. To actually compare these values,
+# set `training.optimizer: SGD` or `AdamW` explicitly.
 lr0: 0.01          # initial learning rate (SGD=0.01, Adam=0.001)
 lrf: 0.01          # final lr = lr0 * lrf (cosine annealing endpoint)
 warmup_epochs: 3.0

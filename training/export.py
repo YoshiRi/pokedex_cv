@@ -40,15 +40,19 @@ def load_config(path: Path) -> dict:
 
 def _resolve_weights(cfg: dict, args: argparse.Namespace) -> Path:
     if args.weights:
-        return Path(args.weights)
-    train_cfg = cfg.get("training", {})
-    project = Path(args.project or train_cfg.get("project", "runs/train"))
-    name = args.name or train_cfg.get("name", cfg.get("name", "yolo_train"))
-    best = project / name / "weights" / "best.pt"
-    if not best.exists():
-        logger.error("Weights not found at %s. Run training first or pass --weights.", best)
+        weights = Path(args.weights)
+    else:
+        train_cfg = cfg.get("training", {})
+        project = Path(args.project or train_cfg.get("project", "runs/train"))
+        name = args.name or train_cfg.get("name", cfg.get("name", "yolo_train"))
+        weights = project / name / "weights" / "best.pt"
+
+    if not weights.exists():
+        # Fail fast with a clear message — otherwise Ultralytics treats a missing
+        # .pt path as a model name and tries to fetch it from GitHub releases.
+        logger.error("Weights not found at %s. Run training first or pass --weights.", weights)
         sys.exit(1)
-    return best
+    return weights
 
 
 def export_model(weights: Path, fmt: str, imgsz: int, device: str | None, half: bool) -> Path:
