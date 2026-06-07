@@ -92,7 +92,8 @@ def parse_args() -> argparse.Namespace:
         metavar="FORMAT",
         help=f"Export format(s): {SUPPORTED_FORMATS}. Default: onnx",
     )
-    p.add_argument("--imgsz", type=int, default=640)
+    p.add_argument("--imgsz", type=int, default=None,
+                   help="Inference size (default: training.imgsz from --config, else 640)")
     p.add_argument("--device", type=str, default=None)
     p.add_argument("--half", action="store_true",
                    help="Export FP16 (requires CUDA or CoreML)")
@@ -112,9 +113,11 @@ def main() -> None:
         cfg = load_config(args.config)
 
     weights = _resolve_weights(cfg, args)
+    imgsz = args.imgsz if args.imgsz is not None else cfg.get("training", {}).get("imgsz", 640)
+    logger.info("Resolved params: weights=%s imgsz=%d formats=%s", weights, imgsz, args.format)
 
     for fmt in args.format:
-        export_model(weights, fmt, args.imgsz, args.device, args.half)
+        export_model(weights, fmt, imgsz, args.device, args.half)
 
 
 if __name__ == "__main__":

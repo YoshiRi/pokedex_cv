@@ -45,3 +45,4 @@ training:
   project: runs/train
   name: poc_20species_yolov8n
   exist_ok: true
+  hyp: training/configs/yolov8n_poc.yaml

@@ -60,9 +60,11 @@ def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
         "exist_ok": train_cfg.get("exist_ok", True),
     }
 
-    # Hyperparameter override config YAML
-    if args.hyp:
-        kwargs["cfg"] = str(args.hyp)
+    # Hyperparameter override config YAML: CLI flag takes priority over
+    # the experiment config's `training.hyp` (e.g. training/configs/yolov8n_poc.yaml)
+    hyp_path = args.hyp or train_cfg.get("hyp")
+    if hyp_path:
+        kwargs["cfg"] = str(hyp_path)
 
     # Device
     if args.device is not None:
@@ -72,6 +74,17 @@ def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
 
 
 def train(kwargs: dict, resume: bool = False) -> None:
+    data_path = Path(kwargs["data"])
+    if not data_path.exists():
+        logger.error(
+            "data.yaml not found: %s — run the export step first "
+            "(python scripts/run_pipeline.py --config <config> --steps export).",
+            data_path,
+        )
+        sys.exit(1)
+    data_cfg = load_config(data_path)
+    logger.info("Dataset: %s (nc=%d)", data_path, data_cfg.get("nc", 0))
+
     try:
         from ultralytics import YOLO
     except ImportError:
@@ -141,6 +154,11 @@ def main() -> None:
         logger.error("No data.yaml specified. Use --data or set export.output_dir in config.")
         sys.exit(1)
 
+    logger.info(
+        "Resolved params: model=%s data=%s epochs=%d imgsz=%d batch=%d hyp=%s",
+        kwargs["model"], kwargs["data"], kwargs["epochs"], kwargs["imgsz"], kwargs["batch"],
+        kwargs.get("cfg", "none"),
+    )
     train(kwargs, resume=args.resume)
 
 

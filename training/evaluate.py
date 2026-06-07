@@ -62,6 +62,18 @@ def _resolve_data_yaml(cfg: dict, args: argparse.Namespace) -> str | None:
     return None
 
 
+def _resolve_eval_params(cfg: dict, args: argparse.Namespace) -> tuple[int, int]:
+    """Merge CLI overrides with the experiment config's `training` section.
+
+    CLI flags take priority; falls back to the values the model was trained
+    with so evaluation uses matching imgsz/batch by default.
+    """
+    train_cfg = cfg.get("training", {})
+    imgsz = args.imgsz if args.imgsz is not None else train_cfg.get("imgsz", 640)
+    batch = args.batch if args.batch is not None else train_cfg.get("batch", 16)
+    return imgsz, batch
+
+
 def evaluate_val(weights: Path, data_yaml: str, imgsz: int, batch: int, device: str | None) -> None:
     """Run YOLO validation on the synthetic val split."""
     try:
@@ -186,9 +198,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", type=Path, default=Path("runs/eval/real_test"),
                    help="Output directory for real-mode annotated images")
 
-    # Inference params
-    p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--batch", type=int, default=16)
+    # Inference params (default: fall back to the experiment config's training section)
+    p.add_argument("--imgsz", type=int, default=None)
+    p.add_argument("--batch", type=int, default=None)
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--iou", type=float, default=0.7)
     p.add_argument("--device", type=str, default=None)
@@ -209,13 +221,15 @@ def main() -> None:
         cfg = load_config(args.config)
 
     weights = _resolve_weights(cfg, args)
+    imgsz, batch = _resolve_eval_params(cfg, args)
+    logger.info("Resolved params: weights=%s imgsz=%d batch=%d mode=%s", weights, imgsz, batch, args.mode)
 
     if args.mode == "val":
         data_yaml = _resolve_data_yaml(cfg, args)
         if not data_yaml:
             logger.error("No data.yaml found. Use --data or set export.output_dir in config.")
             sys.exit(1)
-        evaluate_val(weights, data_yaml, args.imgsz, args.batch, args.device)
+        evaluate_val(weights, data_yaml, imgsz, batch, args.device)
 
     else:  # real
         if args.images is None:
@@ -225,7 +239,7 @@ def main() -> None:
             weights,
             args.images,
             args.output,
-            args.imgsz,
+            imgsz,
             args.conf,
             args.iou,
             args.device,
