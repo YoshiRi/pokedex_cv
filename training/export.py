@@ -98,7 +98,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--imgsz", type=int, default=None,
                    help="Inference size (default: training.imgsz from --config, else 640)")
-    p.add_argument("--device", type=str, default=None)
+    p.add_argument("--device", type=str, default=None,
+                   help="Device: 0, 0,1, cpu, mps (Apple Silicon GPU) — default: Ultralytics auto-selects")
     p.add_argument("--half", action="store_true",
                    help="Export FP16 (requires CUDA or CoreML)")
     return p.parse_args()
