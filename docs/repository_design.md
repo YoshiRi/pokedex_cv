@@ -120,20 +120,30 @@ pokedex_cv/
 - Ultralytics API を共通インターフェースとして利用（YOLOv8 / RT-DETR を同じAPIで扱える）
 - `train.py --config configs/{experiment}.yaml` で実験設定を切り替える
 - `evaluate.py` には2モード:
-  - `val`: 合成データの mAP@50 / mAP@50:95（自動評価）
+  - `val`: 合成データの mAP@50 / mAP@50:95（自動評価）→ `eval_report.yaml` で永続化
   - `real`: 実画像への推論と検出数集計（sim-to-real ギャップ確認）
 - `export.py` で ONNX / TorchScript エクスポート
+- **実験追跡**: 学習完了時に `experiment_manifest.yaml` を run dir に書き出し:
+  - 使用 experiment config パス、model、hyp パス
+  - epochs / imgsz / batch / device / optimizer
+  - dataset fingerprint (data.yaml sha256 + labels集約sha256)
+  - nc / names
 
 ### 実験管理 (`configs/`)
 
 実験の再現性単位として `configs/{name}.yaml` を使う。
 
 1ファイルに以下を統合:
-- `class_map`: 図鑑番号→YOLO class_id の変換テーブル
+- `class_map`: 図鑑番号→YOLO class_id の変換テーブル（null なら `pokemon_classes.yaml` から自動生成）
 - `collection`: 収集対象・ソース設定
 - `annotation`: composite_gen のパラメータ
 - `export`: データセット出力先・split 比率
-- `training`: モデル・エポック数・batch サイズ等
+- `training`: モデル・エポック数・batch サイズ・hyp ファイルパス等
+
+| Config | Species | 用途 |
+|---|---|---|
+| `poc_20species.yaml` | 20 | パイプライン検証・ベースライン |
+| `full_1025species.yaml` | 1025 | フル学習（class_map/pokemon_ids 共に null → 自動解決） |
 
 ### E2E ランナー (`scripts/run_pipeline.py`)
 
@@ -184,3 +194,55 @@ PoC (20種) の class_map:
 | `albumentations` | （Ultralytics 組み込み拡張で代替、将来的な独自拡張用） |
 | `pyyaml` | 設定ファイル読み書き |
 | `segment-anything-2` | SAM2（オプション依存） |
+
+---
+
+## 開発進捗
+
+### パイプライン整備フェーズ — 完了基準と現状
+
+データセットエンジニアリングに移行するためのゲート条件:
+
+| # | 基準 | 状態 | 備考 |
+|---|---|---|---|
+| 1 | collect → annotate → export → validate → train → evaluate が再現可能 | ✅ | `run_pipeline.py --clean` + `train.py` + `evaluate.py` で手順明確。train/evaluate は GPU 要 |
+| 2 | data.yaml の nc / names / class_id が信用できる | ✅ | `_resolve_class_map` 4段階フォールバック、`_unique_stem` 衝突防止、cross-split 重複検出 |
+| 3 | train / evaluate / export が config 駆動 | ✅ | experiment config → data.yaml / model / hyp / imgsz / batch すべて自動解決 |
+| 4 | MPS で短時間学習できる | 🔲 | `--device mps` のパススルーは実装済み。Mac ローカルでの実走確認が未完 |
+| 5 | mAP / per-class AP / config / dataset版 / weights 保存先の追跡 | ✅ | `experiment_manifest.yaml` (train) + `eval_report.yaml` (evaluate) で run dir に永続化 |
+| 6 | 20種 PoC 20epoch のベースラインが安定して出る | 🔲 | データセット (1856枚, nc=20) は準備済み。ローカルで実走させてベースラインを確定する |
+
+### 完了済みの主な改善 (PR #5–#9)
+
+- **PR #5**: PoC スプライト収集・アノテーション・YOLO export・validation の初期実装
+- **PR #6**: `annotation/types.py` → `schema.py` リネーム (stdlib `types` 回避)、dataset validation、config 駆動 pipeline runner
+- **PR #7**: `_resolve_class_map` (1025種自動生成)、`full_1025species.yaml`、`README.md`、`_unique_stem` ファイル名衝突修正、`--clean` フラグ、filter config の KeyError 修正
+- **PR #8**: `training.hyp` config 自動読み込み、evaluate/export の imgsz/batch config フォールバック、`--weights` 存在チェック、`optimizer:auto` + hyp lr の注意書き
+- **PR #9**: `experiment_manifest.yaml` (device/optimizer/dataset fingerprint 含む)、`eval_report.yaml`、MPS ドキュメント
+
+### 既知の注意事項
+
+- **`optimizer: auto`**: hyp の `lr0`/`lrf`/`momentum` は Ultralytics が自動上書きするため無視される。lr を意図通り比較するには `optimizer: SGD` か `AdamW` を明示する必要がある
+- **`num_composites: 5`** (full_1025species): 1025クラスに対して薄い可能性がある。小サブセット比較 → 短 epoch スモーク → per-class AP で弱い種を特定 → 再チューニングの順で進める
+- **dedup の同一ポケモン例外**: pHash はグレースケール化するため通常/色違いの構造差を検出できない。同一ポケモンディレクトリ内のスプライトは比較をスキップしている
+
+---
+
+## 次フェーズ: データセットエンジニアリング
+
+パイプライン整備フェーズ残タスク (4, 6) を Mac ローカルで通過した後、以下に着手する:
+
+### 目的
+
+合成データの質と量を改善し、sim-to-real ギャップを縮小する。
+
+### 計画中のアプローチ
+
+| 施策 | 期待効果 | 優先度 |
+|---|---|---|
+| 背景画像の多様化（実写背景、COCO/ImageNet 背景） | sim-to-real 転移の改善 | 高 |
+| composite_gen のスケール・配置ランダム化改善 | 小さいポケモン・重なりケースの学習 | 高 |
+| num_composites のクラス別調整（弱い種を増やす） | per-class AP の底上げ | 中 |
+| 実画像の少数追加（手動 or SAM2 アノテーション） | sim-to-real ギャップの直接的改善 | 中 |
+| augmentation hyp のチューニング（HSV/scale/mosaic 比率） | 合成データ特有の過学習を防ぐ | 中 |
+| `optimizer: SGD` / `AdamW` 明示実験 | lr 制御による性能比較 | 低（ベースライン確定後） |
