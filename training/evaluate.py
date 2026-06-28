@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -42,15 +43,19 @@ def load_config(path: Path) -> dict:
 
 def _resolve_weights(cfg: dict, args: argparse.Namespace) -> Path:
     if args.weights:
-        return Path(args.weights)
-    train_cfg = cfg.get("training", {})
-    project = Path(args.project or train_cfg.get("project", "runs/train"))
-    name = args.name or train_cfg.get("name", cfg.get("name", "yolo_train"))
-    best = project / name / "weights" / "best.pt"
-    if not best.exists():
-        logger.error("Weights not found at %s. Run training first or pass --weights.", best)
+        weights = Path(args.weights)
+    else:
+        train_cfg = cfg.get("training", {})
+        project = Path(args.project or train_cfg.get("project", "runs/train"))
+        name = args.name or train_cfg.get("name", cfg.get("name", "yolo_train"))
+        weights = project / name / "weights" / "best.pt"
+
+    if not weights.exists():
+        # Fail fast with a clear message — otherwise Ultralytics treats a missing
+        # .pt path as a model name and tries to fetch it from GitHub releases.
+        logger.error("Weights not found at %s. Run training first or pass --weights.", weights)
         sys.exit(1)
-    return best
+    return weights
 
 
 def _resolve_data_yaml(cfg: dict, args: argparse.Namespace) -> str | None:
@@ -62,7 +67,64 @@ def _resolve_data_yaml(cfg: dict, args: argparse.Namespace) -> str | None:
     return None
 
 
-def evaluate_val(weights: Path, data_yaml: str, imgsz: int, batch: int, device: str | None) -> None:
+def _resolve_eval_params(cfg: dict, args: argparse.Namespace) -> tuple[int, int]:
+    """Merge CLI overrides with the experiment config's `training` section.
+
+    CLI flags take priority; falls back to the values the model was trained
+    with so evaluation uses matching imgsz/batch by default.
+    """
+    train_cfg = cfg.get("training", {})
+    imgsz = args.imgsz if args.imgsz is not None else train_cfg.get("imgsz", 640)
+    batch = args.batch if args.batch is not None else train_cfg.get("batch", 16)
+    return imgsz, batch
+
+
+def _write_eval_report(
+    report_path: Path,
+    *,
+    weights: Path,
+    data_yaml: str,
+    config_path: Path | None,
+    metrics,
+    names: dict,
+) -> None:
+    """Persist mAP / per-class AP next to the weights that produced them.
+
+    `evaluate_val` already prints these to stdout, but terminal scrollback
+    isn't a comparable record across runs — write a small YAML report so
+    "what mAP did this checkpoint get, on what data, under what config" can
+    be answered later without re-running validation.
+    """
+    report = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "weights": str(weights),
+        "data_yaml": str(data_yaml),
+        "experiment_config": str(config_path) if config_path else None,
+        "map50": float(metrics.box.map50),
+        "map50_95": float(metrics.box.map),
+        "precision": float(metrics.box.mp),
+        "recall": float(metrics.box.mr),
+    }
+    if hasattr(metrics.box, "ap_class_index") and metrics.box.ap_class_index is not None:
+        report["per_class_ap50"] = {
+            str(names.get(idx, idx)): float(ap)
+            for idx, ap in zip(metrics.box.ap_class_index, metrics.box.ap50)
+        }
+
+    with report_path.open("w", encoding="utf-8") as f:
+        yaml.dump(report, f, allow_unicode=True, sort_keys=False)
+    logger.info("Wrote eval report → %s", report_path)
+
+
+def evaluate_val(
+    weights: Path,
+    data_yaml: str,
+    imgsz: int,
+    batch: int,
+    device: str | None,
+    *,
+    config_path: Path | None = None,
+) -> None:
     """Run YOLO validation on the synthetic val split."""
     try:
         from ultralytics import YOLO
@@ -97,6 +159,16 @@ def evaluate_val(weights: Path, data_yaml: str, imgsz: int, batch: int, device: 
         names = model.names
         for idx, ap in zip(metrics.box.ap_class_index, metrics.box.ap50):
             print(f"  {names.get(idx, idx):20s}: {ap:.4f}")
+
+    # Co-locate the metrics report with the weights — runs/train/<name>/eval_report.yaml
+    _write_eval_report(
+        weights.parent.parent / "eval_report.yaml",
+        weights=weights,
+        data_yaml=data_yaml,
+        config_path=config_path,
+        metrics=metrics,
+        names=model.names,
+    )
 
 
 def evaluate_real(
@@ -186,12 +258,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output", type=Path, default=Path("runs/eval/real_test"),
                    help="Output directory for real-mode annotated images")
 
-    # Inference params
-    p.add_argument("--imgsz", type=int, default=640)
-    p.add_argument("--batch", type=int, default=16)
+    # Inference params (default: fall back to the experiment config's training section)
+    p.add_argument("--imgsz", type=int, default=None)
+    p.add_argument("--batch", type=int, default=None)
     p.add_argument("--conf", type=float, default=0.25)
     p.add_argument("--iou", type=float, default=0.7)
-    p.add_argument("--device", type=str, default=None)
+    p.add_argument("--device", type=str, default=None,
+                   help="Device: 0, 0,1, cpu, mps (Apple Silicon GPU) — default: Ultralytics auto-selects")
 
     return p.parse_args()
 
@@ -209,13 +282,15 @@ def main() -> None:
         cfg = load_config(args.config)
 
     weights = _resolve_weights(cfg, args)
+    imgsz, batch = _resolve_eval_params(cfg, args)
+    logger.info("Resolved params: weights=%s imgsz=%d batch=%d mode=%s", weights, imgsz, batch, args.mode)
 
     if args.mode == "val":
         data_yaml = _resolve_data_yaml(cfg, args)
         if not data_yaml:
             logger.error("No data.yaml found. Use --data or set export.output_dir in config.")
             sys.exit(1)
-        evaluate_val(weights, data_yaml, args.imgsz, args.batch, args.device)
+        evaluate_val(weights, data_yaml, imgsz, batch, args.device, config_path=args.config)
 
     else:  # real
         if args.images is None:
@@ -225,7 +300,7 @@ def main() -> None:
             weights,
             args.images,
             args.output,
-            args.imgsz,
+            imgsz,
             args.conf,
             args.iou,
             args.device,

@@ -45,6 +45,23 @@ from annotation.schema import AnnotationStore, ImageAnnotation
 logger = logging.getLogger(__name__)
 
 
+def _unique_stem(src: Path) -> str:
+    """Build a globally unique output stem for an image file.
+
+    Sprites live in 4-digit Pokemon ID directories (e.g. 0001/front_default.png).
+    Without prefixing, all front_default.png files from different Pokemon overwrite
+    each other in the flat YOLO output dir.
+
+    Rule:
+      - 4-digit parent dir (sprite) → "{pokemon_id}_{stem}"  e.g. "0001_front_default"
+      - anything else (composite)  → original stem            e.g. "composite_000000"
+    """
+    parent = src.parent.name
+    if len(parent) == 4 and parent.isdigit():
+        return f"{parent}_{src.stem}"
+    return src.stem
+
+
 def export_yolo(
     annotations: list[ImageAnnotation],
     output_dir: Path,
@@ -53,6 +70,7 @@ def export_yolo(
     min_confidence: float = 0.0,
     class_map: list[int] | None = None,
     seed: int = 42,
+    clean: bool = False,
 ) -> None:
     """Export annotations to YOLO format.
 
@@ -65,8 +83,13 @@ def export_yolo(
             Bboxes whose pokemon_id is not in the map are skipped.
             If None, pokemon_id is used directly as class_id.
         seed: random seed for split shuffling.
+        clean: if True, remove output_dir before writing (guarantees fresh dataset).
     """
     assert abs(sum(split) - 1.0) < 1e-6, "Split ratios must sum to 1.0"
+
+    if clean and output_dir.exists():
+        shutil.rmtree(output_dir)
+        logger.info("Removed existing output dir: %s (clean=True)", output_dir)
 
     pokedex_to_class: dict[int, int] | None = None
     if class_map is not None:
@@ -97,7 +120,8 @@ def export_yolo(
                 logger.warning("Image not found: %s", src)
                 continue
 
-            dst_img = img_dir / src.name
+            stem = _unique_stem(src)
+            dst_img = img_dir / (stem + src.suffix)
             shutil.copy2(src, dst_img)
 
             lines = []
@@ -115,7 +139,7 @@ def export_yolo(
                 lines.append(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
 
             if lines:
-                lbl_path = lbl_dir / (src.stem + ".txt")
+                lbl_path = lbl_dir / (stem + ".txt")
                 lbl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
         logger.info("  %s: %d images", split_name, len(split_anns))
@@ -157,6 +181,38 @@ def _write_data_yaml(output_dir: Path, class_map: list[int] | None) -> None:
     logger.info("Wrote %s (nc=%d)", yaml_path, len(class_names))
 
 
+def _resolve_class_map(cfg: dict) -> list[int] | None:
+    """Determine class_map from experiment config.
+
+    Priority:
+      1. Explicit ``class_map`` list in config → use as-is.
+      2. ``class_map`` absent/null + ``pokemon_ids`` list → sorted pokemon_ids.
+      3. ``class_map`` absent/null + ``pokemon_ids`` null → all IDs from
+         pokemon_classes.yaml (full 1025-species run).
+      4. Nothing resolvable → return None (bbox.pokemon_id used directly).
+    """
+    explicit = cfg.get("class_map")
+    if explicit is not None:
+        return explicit
+
+    pokemon_ids = cfg.get("pokemon_ids")
+    if pokemon_ids:
+        return sorted(pokemon_ids)
+
+    # Try to load all IDs from pokemon_classes.yaml
+    classes_path = Path(__file__).parent.parent.parent / "pokemon_classes.yaml"
+    if classes_path.exists():
+        try:
+            data = yaml.safe_load(classes_path.read_text(encoding="utf-8"))
+            all_ids = sorted(data["pokemon"].keys())
+            logger.info("class_map: auto-generated %d classes from pokemon_classes.yaml", len(all_ids))
+            return all_ids
+        except Exception as e:
+            logger.warning("Cannot auto-generate class_map: %s", e)
+
+    return None
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     p = argparse.ArgumentParser()
@@ -168,6 +224,8 @@ def main() -> None:
                    metavar=("TRAIN", "VAL", "TEST"))
     p.add_argument("--min-confidence", type=float, default=None)
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--clean", action="store_true",
+                   help="Remove output dir before writing (guarantees fresh dataset)")
     args = p.parse_args()
 
     cfg: dict = {}
@@ -176,7 +234,7 @@ def main() -> None:
             cfg = yaml.safe_load(f)
 
     export_cfg = cfg.get("export", {})
-    class_map: list[int] | None = cfg.get("class_map")
+    class_map: list[int] | None = _resolve_class_map(cfg)
     split = tuple(args.split or export_cfg.get("split", [0.8, 0.1, 0.1]))
     min_confidence = args.min_confidence if args.min_confidence is not None else export_cfg.get("min_confidence", 0.0)
     seed = args.seed if args.seed is not None else export_cfg.get("seed", 42)
@@ -195,6 +253,7 @@ def main() -> None:
         min_confidence=min_confidence,
         class_map=class_map,
         seed=seed,
+        clean=args.clean,
     )
 
 

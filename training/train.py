@@ -19,8 +19,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import yaml
@@ -33,6 +35,79 @@ logger = logging.getLogger(__name__)
 def load_config(path: Path) -> dict:
     with path.open(encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _dataset_fingerprint(data_yaml_path: Path) -> str:
+    """Short content hash of data.yaml — changes whenever nc/names/path change.
+
+    Weak on its own: data.yaml stays identical even if the underlying images,
+    labels, or train/val/test split membership are regenerated differently
+    (e.g. different export seed). Pair with `_labels_fingerprint`.
+    """
+    return hashlib.sha256(data_yaml_path.read_bytes()).hexdigest()[:12]
+
+
+def _labels_fingerprint(dataset_dir: Path) -> str | None:
+    """Aggregate content hash over labels/**/*.txt (path + bytes, sorted).
+
+    Captures what data.yaml can't: actual bbox/class content of every label
+    file *and* which split directory each one lives in — so re-exporting with
+    a different seed, class_map, or annotation set changes this hash even
+    when nc/names/path in data.yaml stay the same. Returns None if there's no
+    labels/ directory (e.g. dataset not yet exported).
+    """
+    labels_root = dataset_dir / "labels"
+    if not labels_root.is_dir():
+        return None
+    paths = sorted(labels_root.rglob("*.txt"))
+    if not paths:
+        return None
+    digest = hashlib.sha256()
+    for p in paths:
+        digest.update(p.relative_to(labels_root).as_posix().encode("utf-8"))
+        digest.update(p.read_bytes())
+    return digest.hexdigest()[:12]
+
+
+def _write_run_manifest(
+    run_dir: Path,
+    *,
+    config_path: Path | None,
+    data_path: Path,
+    data_cfg: dict,
+    kwargs: dict,
+) -> None:
+    """Record what produced this run's weights: config, dataset, hyperparameters.
+
+    Written into the same directory Ultralytics saves weights/ to, so
+    `runs/train/<name>/` is self-describing — answers "which experiment
+    config and which dataset export produced best.pt, on which device, with
+    which optimizer?" without needing to cross-reference shell history.
+    """
+    manifest = {
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "experiment_config": str(config_path) if config_path else None,
+        "model": kwargs.get("model"),
+        "hyp": kwargs.get("cfg"),
+        "epochs": kwargs.get("epochs"),
+        "imgsz": kwargs.get("imgsz"),
+        "batch": kwargs.get("batch"),
+        # None means Ultralytics auto-selected (records what was *requested*,
+        # not necessarily what ran — see Ultralytics' own args.yaml for that)
+        "device": kwargs.get("device"),
+        "optimizer": kwargs.get("optimizer"),
+        "dataset": {
+            "data_yaml": str(data_path),
+            "data_yaml_fingerprint": _dataset_fingerprint(data_path),
+            "labels_fingerprint": _labels_fingerprint(data_path.parent),
+            "nc": data_cfg.get("nc"),
+            "names": data_cfg.get("names"),
+        },
+    }
+    manifest_path = run_dir / "experiment_manifest.yaml"
+    with manifest_path.open("w", encoding="utf-8") as f:
+        yaml.dump(manifest, f, allow_unicode=True, sort_keys=False)
+    logger.info("Wrote run manifest → %s", manifest_path)
 
 
 def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
@@ -60,9 +135,11 @@ def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
         "exist_ok": train_cfg.get("exist_ok", True),
     }
 
-    # Hyperparameter override config YAML
-    if args.hyp:
-        kwargs["cfg"] = str(args.hyp)
+    # Hyperparameter override config YAML: CLI flag takes priority over
+    # the experiment config's `training.hyp` (e.g. training/configs/yolov8n_poc.yaml)
+    hyp_path = args.hyp or train_cfg.get("hyp")
+    if hyp_path:
+        kwargs["cfg"] = str(hyp_path)
 
     # Device
     if args.device is not None:
@@ -71,7 +148,18 @@ def build_train_kwargs(cfg: dict, args: argparse.Namespace) -> dict:
     return kwargs
 
 
-def train(kwargs: dict, resume: bool = False) -> None:
+def train(kwargs: dict, resume: bool = False, config_path: Path | None = None) -> None:
+    data_path = Path(kwargs["data"])
+    if not data_path.exists():
+        logger.error(
+            "data.yaml not found: %s — run the export step first "
+            "(python scripts/run_pipeline.py --config <config> --steps export).",
+            data_path,
+        )
+        sys.exit(1)
+    data_cfg = load_config(data_path)
+    logger.info("Dataset: %s (nc=%d)", data_path, data_cfg.get("nc", 0))
+
     try:
         from ultralytics import YOLO
     except ImportError:
@@ -98,6 +186,14 @@ def train(kwargs: dict, resume: bool = False) -> None:
     results = model.train(**kwargs)
     logger.info("Training complete. Results saved to %s", results.save_dir)
 
+    _write_run_manifest(
+        Path(results.save_dir),
+        config_path=config_path,
+        data_path=data_path,
+        data_cfg=data_cfg,
+        kwargs={**kwargs, "model": model_arg},
+    )
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train YOLO Pokemon detector")
@@ -111,7 +207,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--imgsz", type=int, default=None)
     p.add_argument("--batch", type=int, default=None)
     p.add_argument("--device", type=str, default=None,
-                   help="Device: 0, 0,1, cpu (default: auto)")
+                   help="Device: 0, 0,1, cpu, mps (Apple Silicon GPU) — default: Ultralytics auto-selects")
     p.add_argument("--project", type=str, default=None,
                    help="Output project directory (default: runs/train)")
     p.add_argument("--name", type=str, default=None,
@@ -141,7 +237,12 @@ def main() -> None:
         logger.error("No data.yaml specified. Use --data or set export.output_dir in config.")
         sys.exit(1)
 
-    train(kwargs, resume=args.resume)
+    logger.info(
+        "Resolved params: model=%s data=%s epochs=%d imgsz=%d batch=%d hyp=%s",
+        kwargs["model"], kwargs["data"], kwargs["epochs"], kwargs["imgsz"], kwargs["batch"],
+        kwargs.get("cfg", "none"),
+    )
+    train(kwargs, resume=args.resume, config_path=args.config)
 
 
 if __name__ == "__main__":
