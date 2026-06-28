@@ -208,7 +208,7 @@ PoC (20種) の class_map:
 | 1 | collect → annotate → export → validate → train → evaluate が再現可能 | ✅ | `run_pipeline.py --clean` + `train.py` + `evaluate.py` で手順明確。train/evaluate は GPU 要 |
 | 2 | data.yaml の nc / names / class_id が信用できる | ✅ | `_resolve_class_map` 4段階フォールバック、`_unique_stem` 衝突防止、cross-split 重複検出 |
 | 3 | train / evaluate / export が config 駆動 | ✅ | experiment config → data.yaml / model / hyp / imgsz / batch すべて自動解決 |
-| 4 | MPS で短時間学習できる | 🔲 | `--device mps` のパススルーは実装済み。Mac ローカルでの実走確認が未完 |
+| 4 | MPS で短時間学習できる | ✅ | `--device mps` で 1epoch 学習 + 評価まで完走確認済み (PR #8/#9 検証時) |
 | 5 | mAP / per-class AP / config / dataset版 / weights 保存先の追跡 | ✅ | `experiment_manifest.yaml` (train) + `eval_report.yaml` (evaluate) で run dir に永続化 |
 | 6 | 20種 PoC 20epoch のベースラインが安定して出る | 🔲 | データセット (1856枚, nc=20) は準備済み。ローカルで実走させてベースラインを確定する |
 
@@ -230,7 +230,7 @@ PoC (20種) の class_map:
 
 ## 次フェーズ: データセットエンジニアリング
 
-パイプライン整備フェーズ残タスク (4, 6) を Mac ローカルで通過した後、以下に着手する:
+パイプライン整備フェーズ残タスク (6: 20種 PoC 20epoch ベースライン安定) を確認した後、以下に着手する:
 
 ### 目的
 
