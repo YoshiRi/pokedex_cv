@@ -67,7 +67,7 @@ class CompositeGenStage:
         count = 0
         for sprite_img, pokemon_id in sprites:
             for i in range(self.cfg.num_composites):
-                ann = self._make_composite(sprite_img, pokemon_id, count)
+                ann = self._make_composite(sprite_img, pokemon_id, count, sprite_pool=sprites)
                 if ann is not None:
                     store.append(ann)
                     count += 1
@@ -84,6 +84,8 @@ class CompositeGenStage:
         primary_sprite: Image.Image,
         primary_id: int,
         index: int,
+        *,
+        sprite_pool: list[tuple[Image.Image, int]] | None = None,
     ) -> ImageAnnotation | None:
         W, H = self.cfg.output_size
         bg = self._get_background(W, H)
@@ -94,10 +96,14 @@ class CompositeGenStage:
         n_pokemon = random.randint(self.cfg.min_pokemon, self.cfg.max_pokemon)
         # First slot is always the primary sprite to guarantee it appears
         sprites_to_paste = [(primary_sprite, primary_id)]
-        # Additional random sprites share the same source list for now;
-        # callers can extend this by passing a sprite pool separately.
+        # Additional slots draw from the full sprite pool (different species)
+        # to teach the model multi-class scenes, falling back to the primary
+        # sprite when no pool is available.
         for _ in range(n_pokemon - 1):
-            sprites_to_paste.append((primary_sprite, primary_id))
+            if sprite_pool and len(sprite_pool) > 1:
+                sprites_to_paste.append(random.choice(sprite_pool))
+            else:
+                sprites_to_paste.append((primary_sprite, primary_id))
 
         for sprite, pid in sprites_to_paste:
             result = self._paste_sprite(canvas, sprite, pid)
@@ -173,9 +179,14 @@ class CompositeGenStage:
                 pass
         return self._generate_background(W, H)
 
+    _BG_TYPES = [
+        "solid", "gradient_h", "gradient_v", "noise",
+        "sky", "grass", "checkerboard", "bokeh",
+    ]
+
     @staticmethod
     def _generate_background(W: int, H: int) -> Image.Image:
-        choice = random.choice(["solid", "gradient_h", "gradient_v", "noise"])
+        choice = random.choice(CompositeGenStage._BG_TYPES)
         arr = np.zeros((H, W, 3), dtype=np.uint8)
 
         if choice == "solid":
@@ -193,8 +204,46 @@ class CompositeGenStage:
             t = np.linspace(0, 1, H)[:, np.newaxis, np.newaxis]
             arr[:] = (c1 * (1 - t) + c2 * t).astype(np.uint8)
 
-        else:  # noise
+        elif choice == "noise":
             arr = np.random.randint(0, 255, (H, W, 3), dtype=np.uint8)
+
+        elif choice == "sky":
+            top = np.array([random.randint(80, 180), random.randint(140, 220), random.randint(200, 255)])
+            bot = np.array([random.randint(180, 255), random.randint(200, 255), random.randint(220, 255)])
+            t = np.linspace(0, 1, H)[:, np.newaxis, np.newaxis]
+            arr[:] = (top * (1 - t) + bot * t).astype(np.uint8)
+
+        elif choice == "grass":
+            base = np.array([random.randint(30, 80), random.randint(100, 180), random.randint(20, 60)])
+            noise = np.random.randint(-30, 30, (H, W, 3), dtype=np.int16)
+            arr[:] = np.clip(base + noise, 0, 255).astype(np.uint8)
+
+        elif choice == "checkerboard":
+            c1 = np.array([random.randint(0, 255) for _ in range(3)])
+            c2 = np.array([random.randint(0, 255) for _ in range(3)])
+            cell = random.choice([16, 32, 48, 64])
+            yy, xx = np.meshgrid(np.arange(H), np.arange(W), indexing="ij")
+            mask = ((yy // cell) + (xx // cell)) % 2 == 0
+            arr[mask] = c1
+            arr[~mask] = c2
+
+        elif choice == "bokeh":
+            base = np.array([random.randint(0, 60) for _ in range(3)])
+            arr[:] = base
+            yy, xx = np.ogrid[:H, :W]
+            for _ in range(random.randint(8, 25)):
+                cx, cy = random.randint(0, W), random.randint(0, H)
+                r = random.randint(20, min(W, H) // 4)
+                color = np.array([random.randint(100, 255) for _ in range(3)])
+                alpha = random.uniform(0.15, 0.45)
+                dist2 = (xx - cx) ** 2 + (yy - cy) ** 2
+                mask = dist2 < r * r
+                falloff = np.clip(1.0 - np.sqrt(dist2[mask].astype(np.float32)) / r, 0, 1)
+                for c in range(3):
+                    channel = arr[:, :, c]
+                    channel[mask] = np.clip(
+                        channel[mask] + (color[c] * alpha * falloff), 0, 255
+                    ).astype(np.uint8)
 
         return Image.fromarray(arr)
 
