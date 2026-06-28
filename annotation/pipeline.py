@@ -68,6 +68,7 @@ def _resolve_args(args: argparse.Namespace, cfg: dict) -> argparse.Namespace:
     args.max_scale = args.max_scale or ann_cfg.get("max_scale", 0.50)
     args.min_pokemon = args.min_pokemon or ann_cfg.get("min_pokemon", 1)
     args.max_pokemon = args.max_pokemon or ann_cfg.get("max_pokemon", 3)
+    args.backgrounds = args.backgrounds or ann_cfg.get("backgrounds_dir")
     args.seed = args.seed if args.seed is not None else ann_cfg.get("seed", 42)
 
     return args
