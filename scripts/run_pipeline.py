@@ -125,6 +125,9 @@ def step_annotate(cfg: dict, *, overwrite: bool = False) -> None:
         max_pokemon=None,
         backgrounds=None,
         seed=None,
+        max_iou=None,
+        truncation_prob=None,
+        augment_sprites=None,
     )
     args = _resolve_args(dummy, cfg)
     run_pipeline(args)

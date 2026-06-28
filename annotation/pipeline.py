@@ -71,6 +71,13 @@ def _resolve_args(args: argparse.Namespace, cfg: dict) -> argparse.Namespace:
     args.backgrounds = args.backgrounds or ann_cfg.get("backgrounds_dir")
     args.seed = args.seed if args.seed is not None else ann_cfg.get("seed", 42)
 
+    if args.max_iou is None:
+        args.max_iou = ann_cfg.get("max_iou", 0.3)
+    if args.truncation_prob is None:
+        args.truncation_prob = ann_cfg.get("truncation_prob", 0.15)
+    if args.augment_sprites is None:
+        args.augment_sprites = ann_cfg.get("augment_sprites", True)
+
     return args
 
 
@@ -113,6 +120,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
             max_pokemon=args.max_pokemon,
             backgrounds_dir=Path(args.backgrounds) if args.backgrounds else None,
             seed=args.seed,
+            max_iou=args.max_iou,
+            truncation_prob=args.truncation_prob,
+            augment_sprites=args.augment_sprites,
         )
         alpha_anns = [a for a in store.load_all() if a.stage == "alpha"]
         logger.info("Using %d alpha-annotated sprites as composite source", len(alpha_anns))
@@ -147,6 +157,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-pokemon", type=int, default=None)
     p.add_argument("--backgrounds", default=None)
     p.add_argument("--seed", type=int, default=None)
+    p.add_argument("--max-iou", type=float, default=None,
+                   help="Max IoU between sprites before rejecting placement (default: 0.3)")
+    p.add_argument("--truncation-prob", type=float, default=None,
+                   help="Probability of placing sprite partially outside canvas (default: 0.15)")
+    p.add_argument("--augment-sprites", type=bool, default=None,
+                   help="Apply random flip/rotation/color jitter to sprites (default: true)")
 
     return p.parse_args()
 

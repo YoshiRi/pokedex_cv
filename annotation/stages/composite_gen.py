@@ -24,6 +24,22 @@ from annotation.schema import AnnotationStore, BBoxAnnotation, ImageAnnotation
 logger = logging.getLogger(__name__)
 
 
+def _iou(
+    x1a: int, y1a: int, x2a: int, y2a: int,
+    x1b: int, y1b: int, x2b: int, y2b: int,
+) -> float:
+    ix1 = max(x1a, x1b)
+    iy1 = max(y1a, y1b)
+    ix2 = min(x2a, x2b)
+    iy2 = min(y2a, y2b)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    area_a = (x2a - x1a) * (y2a - y1a)
+    area_b = (x2b - x1b) * (y2b - y1b)
+    return inter / (area_a + area_b - inter)
+
+
 @dataclass
 class CompositeConfig:
     output_dir: Path
@@ -35,6 +51,9 @@ class CompositeConfig:
     max_pokemon: int = 3
     backgrounds_dir: Path | None = None
     seed: int | None = None
+    max_iou: float = 0.3             # reject placements overlapping existing bboxes above this IoU
+    truncation_prob: float = 0.15    # probability of placing sprite partially outside canvas
+    augment_sprites: bool = True     # apply random flip/rotation/color jitter to sprites
 
 
 class CompositeGenStage:
@@ -106,7 +125,7 @@ class CompositeGenStage:
                 sprites_to_paste.append((primary_sprite, primary_id))
 
         for sprite, pid in sprites_to_paste:
-            result = self._paste_sprite(canvas, sprite, pid)
+            result = self._paste_sprite(canvas, sprite, pid, existing_bboxes=bboxes)
             if result is not None:
                 bboxes.append(result)
 
@@ -130,6 +149,7 @@ class CompositeGenStage:
         canvas: Image.Image,
         sprite: Image.Image,
         pokemon_id: int,
+        existing_bboxes: list[BBoxAnnotation] | None = None,
     ) -> BBoxAnnotation | None:
         W, H = canvas.size
         scale = random.uniform(self.cfg.min_scale, self.cfg.max_scale)
@@ -138,23 +158,70 @@ class CompositeGenStage:
 
         resized = sprite.resize((new_w, new_h), Image.LANCZOS)
 
-        max_x = W - new_w
-        max_y = H - new_h
-        if max_x <= 0 or max_y <= 0:
+        if self.cfg.augment_sprites:
+            resized = self._augment_sprite(resized)
+            new_w, new_h = resized.size
+
+        allow_truncation = random.random() < self.cfg.truncation_prob
+        if allow_truncation:
+            margin = max(new_w, new_h) // 2
+            x = random.randint(-margin, W - new_w + margin)
+            y = random.randint(-margin, H - new_h + margin)
+        else:
+            max_x = W - new_w
+            max_y = H - new_h
+            if max_x <= 0 or max_y <= 0:
+                return None
+            x = random.randint(0, max_x)
+            y = random.randint(0, max_y)
+
+        vis_x1 = max(0, x)
+        vis_y1 = max(0, y)
+        vis_x2 = min(W, x + new_w)
+        vis_y2 = min(H, y + new_h)
+        vis_area = (vis_x2 - vis_x1) * (vis_y2 - vis_y1)
+        full_area = new_w * new_h
+        if vis_area < full_area * 0.25 or vis_x2 <= vis_x1 or vis_y2 <= vis_y1:
             return None
 
-        x = random.randint(0, max_x)
-        y = random.randint(0, max_y)
+        if existing_bboxes and self.cfg.max_iou < 1.0:
+            for eb in existing_bboxes:
+                if _iou(vis_x1, vis_y1, vis_x2, vis_y2, eb.x1, eb.y1, eb.x2, eb.y2) > self.cfg.max_iou:
+                    return None
 
-        canvas.paste(resized, (x, y), mask=resized.split()[3] if resized.mode == "RGBA" else None)
+        crop_x = max(0, -x)
+        crop_y = max(0, -y)
+        crop_r = min(new_w, W - x)
+        crop_b = min(new_h, H - y)
+        cropped = resized.crop((crop_x, crop_y, crop_r, crop_b))
+        mask = cropped.split()[3] if cropped.mode == "RGBA" else None
+        canvas.paste(cropped, (vis_x1, vis_y1), mask=mask)
 
         return BBoxAnnotation(
             pokemon_id=pokemon_id,
-            x1=x, y1=y,
-            x2=x + new_w, y2=y + new_h,
+            x1=vis_x1, y1=vis_y1,
+            x2=vis_x2, y2=vis_y2,
             confidence=1.0,
             source="composite",
         )
+
+    @staticmethod
+    def _augment_sprite(sprite: Image.Image) -> Image.Image:
+        if random.random() < 0.5:
+            sprite = sprite.transpose(Image.FLIP_LEFT_RIGHT)
+
+        angle = random.uniform(-15, 15)
+        if abs(angle) > 1:
+            sprite = sprite.rotate(angle, resample=Image.BILINEAR, expand=True)
+
+        if random.random() < 0.5:
+            from PIL import ImageEnhance
+            brightness = random.uniform(0.7, 1.3)
+            sprite = ImageEnhance.Brightness(sprite).enhance(brightness)
+            contrast = random.uniform(0.8, 1.2)
+            sprite = ImageEnhance.Contrast(sprite).enhance(contrast)
+
+        return sprite
 
     # ------------------------------------------------------------------
     # Background helpers
